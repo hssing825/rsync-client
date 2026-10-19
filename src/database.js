@@ -74,8 +74,7 @@ const database = {
         host: server ? server.host : task.host,
         port: server ? server.port : task.port,
         username: server ? server.username : task.username,
-        password: server ? server.password : task.password,
-        module: server ? server.module : task.module
+        password: server ? server.password : task.password
       };
     });
   },
@@ -104,8 +103,7 @@ const database = {
       host: server ? server.host : task.host,
       port: server ? server.port : task.port,
       username: server ? server.username : task.username,
-      password: server ? server.password : task.password,
-      module: server ? server.module : task.module
+      password: server ? server.password : task.password
     };
   },
 

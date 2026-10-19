@@ -261,7 +261,7 @@ router.get('/:id', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, server_id, source_path, target_path, cron_expression, rsync_options } = req.body;
+    const { name, server_id, module, source_path, target_path, cron_expression, rsync_options } = req.body;
     
     if (!name || !server_id || !source_path || !target_path) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
@@ -270,6 +270,7 @@ router.post('/', (req, res) => {
     const result = db.addTask({
       name,
       server_id: parseInt(server_id),
+      module: module || null,
       source_path,
       target_path,
       cron_expression: cron_expression || null,
@@ -290,7 +291,7 @@ router.post('/', (req, res) => {
 
 router.put('/:id', (req, res) => {
   try {
-    const { name, server_id, source_path, target_path, cron_expression, enabled, rsync_options } = req.body;
+    const { name, server_id, module, source_path, target_path, cron_expression, enabled, rsync_options } = req.body;
     
     const task = db.getTask(req.params.id);
     if (!task) {
@@ -300,6 +301,7 @@ router.put('/:id', (req, res) => {
     db.updateTask(req.params.id, {
       name,
       server_id: parseInt(server_id),
+      module: module || null,
       source_path,
       target_path,
       cron_expression,
