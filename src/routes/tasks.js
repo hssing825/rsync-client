@@ -2,11 +2,15 @@ const express = require('express');
 const db = require('../database');
 const { exec, spawn } = require('child_process');
 const cron = require('node-cron');
+const path = require('path');
 
 const router = express.Router();
 
 const runningTasks = {};
 const scheduledTasks = {};
+
+// 项目根目录
+const PROJECT_ROOT = path.join(__dirname, '..', '..');
 
 function loadScheduledTasks() {
   const tasks = db.getTasks().filter(t => t.enabled && t.cron_expression);
@@ -35,8 +39,30 @@ async function executeTask(taskId) {
   
   if (!task || !task.enabled) return;
 
+  // 解析源路径：支持相对路径和绝对路径
+  let sourcePath = task.source_path;
+  if (!path.isAbsolute(sourcePath)) {
+    // 相对路径：相对于项目根目录
+    sourcePath = path.join(PROJECT_ROOT, sourcePath);
+  }
+  
+  // Windows 路径转换为 rsync 兼容格式
+  // cwRsync 使用 Cygwin 路径格式：/cygdrive/c/... 或 /cygdrive/f/...
+  if (process.platform === 'win32') {
+    // 检测是否是 Windows 路径（如 F:/workspace 或 F:\workspace）
+    const winPathMatch = sourcePath.match(/^([A-Za-z]):[\/\\]/);
+    if (winPathMatch) {
+      const drive = winPathMatch[1].toLowerCase();
+      const restPath = sourcePath.substring(2).replace(/\\/g, '/');
+      sourcePath = `/cygdrive/${drive}${restPath}`;
+    } else {
+      // 已经是正斜杠的路径
+      sourcePath = sourcePath.replace(/\\/g, '/');
+    }
+  }
+
   console.log(`\n[Task ${taskId}] Starting task: ${task.name}`);
-  console.log(`[Task ${taskId}] Source: ${task.source_path}`);
+  console.log(`[Task ${taskId}] Source: ${sourcePath}`);
   console.log(`[Task ${taskId}] Target: ${buildTargetPath(task)}`);
 
   const logEntry = db.addLog({
@@ -51,9 +77,9 @@ async function executeTask(taskId) {
   const rsyncArgs = buildRsyncArgs(task, rsyncOptions);
   const targetPath = buildTargetPath(task);
 
-  console.log(`[Task ${taskId}] Rsync command: rsync ${rsyncArgs.join(' ')} ${task.source_path} ${targetPath}`);
+  console.log(`[Task ${taskId}] Rsync command: rsync ${rsyncArgs.join(' ')} ${sourcePath} ${targetPath}`);
 
-  const child = spawn('rsync', [...rsyncArgs, task.source_path, targetPath]);
+  const child = spawn('rsync', [...rsyncArgs, sourcePath, targetPath]);
   runningTasks[taskId] = child;
 
   let stdoutData = '';
@@ -79,9 +105,9 @@ async function executeTask(taskId) {
     
     const fullLog = [
       `=== Task Started ===`,
-      `Source: ${task.source_path}`,
+      `Source: ${sourcePath}`,
       `Target: ${targetPath}`,
-      `Command: rsync ${rsyncArgs.join(' ')} ${task.source_path} ${targetPath}`,
+      `Command: rsync ${rsyncArgs.join(' ')} ${sourcePath} ${targetPath}`,
       ``,
       `=== Output ===`,
       stdoutData || '(no output)',
@@ -432,6 +458,24 @@ router.get('/scheduled', (req, res) => {
   }));
   
   res.json({ success: true, data: scheduled });
+});
+
+// 清理旧日志
+router.post('/logs/clean', (req, res) => {
+  try {
+    const { days } = req.body;
+    const daysToKeep = days || 7;
+    
+    const cleaned = db.cleanOldLogs(daysToKeep);
+    
+    res.json({ 
+      success: true, 
+      message: `Cleaned ${cleaned ? cleaned.length : 0} old log entries`,
+      cleaned: cleaned ? cleaned.length : 0
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 loadScheduledTasks();

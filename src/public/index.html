@@ -112,7 +112,10 @@
           <div class="card">
             <div class="card-header">
               <h2>RSYNC 服务器</h2>
-              <el-button type="primary" @click="showServerDialog()">添加服务器</el-button>
+              <div>
+                <el-button size="small" type="warning" @click="cleanLogs">清理日志</el-button>
+                <el-button type="primary" @click="showServerDialog()">添加服务器</el-button>
+              </div>
             </div>
             <div class="table-responsive">
               <el-table :data="servers" stripe>
@@ -539,16 +542,38 @@
           }
         };
 
+        const cleanLogs = async () => {
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              '确定要清理 7 天前的旧日志吗？此操作不可恢复。',
+              '清理日志',
+              {
+                confirmButtonText: '确定',
+                cancelButtonText: '取消',
+                type: 'warning'
+              }
+            );
+            
+            const res = await axios.post('/api/tasks/logs/clean', { days: 7 });
+            ElementPlus.ElMessage.success(`已清理 ${res.data.cleaned} 条旧日志`);
+          } catch (err) {
+            if (err !== 'cancel') {
+              ElementPlus.ElMessage.error('清理日志失败');
+            }
+          }
+        };
+
         onMounted(() => {
           loadTasks();
           loadServers();
           loadWebDAVConfig();
           
+          // 每 10 秒刷新一次（降低频率）
           setInterval(() => {
             if (activeTab.value === 'tasks') {
               loadTasks();
             }
-          }, 5000);
+          }, 10000);
         });
 
         return {
@@ -581,7 +606,8 @@
           deleteServer,
           testServer,
           saveWebDAVConfig,
-          loadWebDAVConfig
+          loadWebDAVConfig,
+          cleanLogs
         };
       }
     });
