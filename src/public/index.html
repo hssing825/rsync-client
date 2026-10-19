@@ -221,8 +221,8 @@
           <el-form-item label="带宽限制 (KB)">
             <el-input-number v-model="taskForm.rsync_options.bandwidth_limit" :min="0"></el-input-number>
           </el-form-item>
-          <el-form-item label="排除文件">
-            <el-input v-model="taskForm.rsync_options.exclude" type="textarea" :rows="3" placeholder="每行一个模式，例如: *.tmp"></el-input>
+          <el-form-item label="排除文件/文件夹">
+            <el-input v-model="taskForm.rsync_options.exclude" type="textarea" :rows="4" placeholder="每行一个模式：&#10;*.tmp (排除所有.tmp文件)&#10;*.ini (排除所有.ini文件)&#10;logs/ (排除logs文件夹)&#10;temp/ (排除temp文件夹)"></el-input>
           </el-form-item>
           <el-form-item label="包含文件">
             <el-input v-model="taskForm.rsync_options.include" type="textarea" :rows="3" placeholder="每行一个模式"></el-input>
