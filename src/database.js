@@ -80,6 +80,19 @@ const database = {
     });
   },
 
+  cleanOldLogs(maxAgeDays = 7) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
+    const cutoffStr = cutoffDate.toISOString();
+    
+    const removed = db.get('taskLogs')
+      .remove(log => log.finished_at && log.finished_at < cutoffStr)
+      .value();
+    
+    console.log(`[Database] Cleaned ${removed ? removed.length : 0} old logs`);
+    return removed;
+  },
+
   getTask(id) {
     const task = db.get('tasks').find({ id: parseInt(id) }).value();
     if (!task) return null;

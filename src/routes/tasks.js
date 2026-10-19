@@ -172,7 +172,13 @@ function buildRsyncArgs(task, options) {
     args.push('--password-file', options.password_file);
   }
   
-  if (options.rsh) {
+  // SSH 模式特殊处理（Windows 兼容性）
+  const module = task.module ? task.module.trim() : '';
+  if (!module && task.username) {
+    // SSH 模式：使用 ssh 命令并添加 Windows 兼容参数
+    const sshCmd = `ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`;
+    args.push('--rsh', sshCmd);
+  } else if (options.rsh) {
     args.push('--rsh', options.rsh);
   }
   
@@ -184,11 +190,26 @@ function buildRsyncArgs(task, options) {
 }
 
 function buildTargetPath(task) {
-  if (task.username && task.password) {
-    process.env.RSYNC_PASSWORD = task.password;
-    return `${task.username}@${task.host}::${task.module || ''}${task.target_path}`;
+  const module = task.module ? task.module.trim() : '';
+  const targetPath = task.target_path || '';
+  
+  if (module) {
+    // rsync 守护进程模式：user@host::module/path
+    const cleanPath = targetPath.replace(/^\//, '');
+    
+    if (task.username && task.password) {
+      process.env.RSYNC_PASSWORD = task.password;
+      return `${task.username}@${task.host}::${module}/${cleanPath}`;
+    }
+    
+    return `${task.host}::${module}/${cleanPath}`;
+  } else {
+    // SSH 模式：user@host:/path
+    if (task.username) {
+      return `${task.username}@${task.host}:${targetPath}`;
+    }
+    return `${task.host}:${targetPath}`;
   }
-  return `${task.host}::${task.module || ''}${task.target_path}`;
 }
 
 router.get('/', (req, res) => {
@@ -308,41 +329,66 @@ router.post('/:id/run', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
 
+    // 清理僵尸进程
     if (runningTasks[req.params.id]) {
-      return res.status(400).json({ success: false, message: 'Task is already running' });
+      const proc = runningTasks[req.params.id];
+      try {
+        if (!proc.killed) {
+          proc.kill('SIGKILL');
+        }
+      } catch (e) {
+        // 进程可能已经退出
+      }
+      delete runningTasks[req.params.id];
     }
 
+    // 同步执行 executeTask，确保状态正确更新后再返回响应
     await executeTask(req.params.id);
+    
     res.json({ success: true, message: 'Task started' });
   } catch (err) {
+    console.error(`[Task ${req.params.id}] Run error:`, err.message);
+    db.updateTask(req.params.id, { status: 'error' });
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
 router.post('/:id/stop', (req, res) => {
   try {
-    if (runningTasks[req.params.id]) {
-      runningTasks[req.params.id].kill();
-      delete runningTasks[req.params.id];
-      
-      console.log(`\n[Task ${req.params.id}] Task manually stopped`);
-      
-      db.updateTask(req.params.id, { status: 'stopped' });
-      
-      const logs = db.getTaskLogs(req.params.id, 1);
-      if (logs.length > 0) {
-        db.updateLog(logs[0].id, {
-          status: 'stopped',
-          message: logs[0].message + '\n\n=== Task Manually Stopped ===',
-          finished_at: new Date().toISOString()
-        });
-      }
-      
-      res.json({ success: true, message: 'Task stopped' });
-    } else {
-      res.status(400).json({ success: false, message: 'Task is not running' });
+    const task = db.getTask(req.params.id);
+    if (!task) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
     }
+
+    // 如果有运行中的进程，强制终止
+    if (runningTasks[req.params.id]) {
+      const proc = runningTasks[req.params.id];
+      try {
+        proc.kill('SIGKILL');
+      } catch (e) {
+        // 进程可能已经退出
+      }
+      delete runningTasks[req.params.id];
+    }
+
+    console.log(`\n[Task ${req.params.id}] Task manually stopped`);
+
+    // 更新任务状态
+    db.updateTask(req.params.id, { status: 'stopped' });
+
+    // 更新日志
+    const logs = db.getTaskLogs(req.params.id, 1);
+    if (logs.length > 0 && logs[0].status === 'running') {
+      db.updateLog(logs[0].id, {
+        status: 'stopped',
+        message: (logs[0].message || '') + '\n\n=== Task Manually Stopped ===',
+        finished_at: new Date().toISOString()
+      });
+    }
+
+    res.json({ success: true, message: 'Task stopped' });
   } catch (err) {
+    console.error(`[Task ${req.params.id}] Stop error:`, err.message);
     res.status(500).json({ success: false, message: err.message });
   }
 });
