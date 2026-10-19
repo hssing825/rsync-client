@@ -37,7 +37,9 @@ function scheduleTask(task) {
 async function executeTask(taskId) {
   const task = db.getTask(taskId);
   
-  if (!task || !task.enabled) return;
+  if (!task) return;
+
+  const startTime = Date.now();
 
   // 解析源路径：支持相对路径和绝对路径
   let sourcePath = task.source_path;
@@ -89,37 +91,57 @@ async function executeTask(taskId) {
     const text = data.toString();
     stdoutData += text;
     console.log(`[Task ${taskId}] ${text.trim()}`);
+    updateLogProgress(logEntry.lastID, sourcePath, targetPath, rsyncArgs);
   });
 
   child.stderr.on('data', (data) => {
     const text = data.toString();
     stderrData += text;
-    console.error(`[Task ${taskId}] ERROR: ${text.trim()}`);
+    console.error(`[Task ${taskId}] ${text.trim()}`);
+    updateLogProgress(logEntry.lastID, sourcePath, targetPath, rsyncArgs);
   });
+
+  function updateLogProgress(logId, src, tgt, args) {
+    const combinedOutput = (stdoutData + '\n' + stderrData).trim();
+    const lines = combinedOutput.split('\n').filter(l => l.trim());
+    const latestLines = lines.slice(-20).join('\n');
+    
+    // 调试：检查是否有进度信息
+    const lastLine = lines[lines.length - 1] || '';
+    const hasProgress = lastLine.includes('%') || lastLine.includes('to-chk=');
+    console.log(`[Task ${taskId}] updateLogProgress called, logId=${logId}, hasProgress=${hasProgress}, lastLine=${lastLine}`);
+    
+    try {
+      db.updateLog(logId, {
+        status: 'running',
+        message: latestLines
+      });
+      console.log(`[Task ${taskId}] Database updated successfully`);
+    } catch (err) {
+      console.error(`[Task ${taskId}] Database update failed:`, err);
+    }
+  }
 
   child.on('close', (code) => {
     delete runningTasks[taskId];
     
     const status = code === 0 ? 'success' : 'failed';
-    let message = code === 0 ? 'Task completed successfully' : `Task failed with exit code ${code}`;
+    const result = code === 0 ? '成功' : `失败 (退出码 ${code})`;
+    const summary = `任务${result} | 耗时: ${((Date.now() - startTime) / 1000).toFixed(1)}s`;
     
     const fullLog = [
-      `=== Task Started ===`,
-      `Source: ${sourcePath}`,
-      `Target: ${targetPath}`,
-      `Command: rsync ${rsyncArgs.join(' ')} ${sourcePath} ${targetPath}`,
+      summary,
+      `源路径: ${sourcePath}`,
+      `目标: ${targetPath}`,
+      `命令: rsync ${rsyncArgs.join(' ')} ${sourcePath} ${targetPath}`,
       ``,
-      `=== Output ===`,
-      stdoutData || '(no output)',
+      `输出:`,
+      stdoutData || '(无输出)',
       ``,
-      `=== Errors ===`,
-      stderrData || '(no errors)',
-      ``,
-      `=== Result ===`,
-      message
-    ].join('\n');
+      stderrData ? `错误: ${stderrData}` : ''
+    ].filter(Boolean).join('\n');
 
-    console.log(`\n[Task ${taskId}] ${message}`);
+    console.log(`\n[Task ${taskId}] ${summary}`);
     console.log(`[Task ${taskId}] Exit code: ${code}`);
 
     db.updateLog(logEntry.lastID, {
@@ -291,23 +313,24 @@ router.post('/', (req, res) => {
 
 router.put('/:id', (req, res) => {
   try {
-    const { name, server_id, module, source_path, target_path, cron_expression, enabled, rsync_options } = req.body;
-    
     const task = db.getTask(req.params.id);
     if (!task) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
 
-    db.updateTask(req.params.id, {
-      name,
-      server_id: parseInt(server_id),
-      module: module || null,
-      source_path,
-      target_path,
-      cron_expression,
-      enabled: enabled ? 1 : 0,
-      rsync_options: JSON.stringify(rsync_options || {})
-    });
+    const updateData = {};
+    
+    // 只更新实际提供的字段
+    if (req.body.name !== undefined) updateData.name = req.body.name;
+    if (req.body.server_id !== undefined) updateData.server_id = parseInt(req.body.server_id);
+    if (req.body.module !== undefined) updateData.module = req.body.module || null;
+    if (req.body.source_path !== undefined) updateData.source_path = req.body.source_path;
+    if (req.body.target_path !== undefined) updateData.target_path = req.body.target_path;
+    if (req.body.cron_expression !== undefined) updateData.cron_expression = req.body.cron_expression;
+    if (req.body.enabled !== undefined) updateData.enabled = req.body.enabled ? 1 : 0;
+    if (req.body.rsync_options !== undefined) updateData.rsync_options = JSON.stringify(req.body.rsync_options);
+
+    db.updateTask(req.params.id, updateData);
 
     const updatedTask = db.getTask(req.params.id);
     

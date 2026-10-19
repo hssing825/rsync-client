@@ -77,35 +77,48 @@
             <div class="table-responsive">
               <el-table :data="tasks" stripe>
                 <el-table-column prop="id" label="ID" width="60"></el-table-column>
-                <el-table-column prop="name" label="任务名称" min-width="150"></el-table-column>
-                <el-table-column prop="server_name" label="服务器" min-width="120"></el-table-column>
-                <el-table-column prop="module" label="模块" width="100">
+                <el-table-column prop="name" label="任务名称" min-width="120" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="server_name" label="服务器" min-width="100" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="module" label="模块" width="90">
                   <template #default="scope">
-                    <span>{{ scope.row.module || '(SSH模式)' }}</span>
+                    <span>{{ scope.row.module || '(SSH)' }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column prop="source_path" label="源路径" min-width="150" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="target_path" label="目标路径" min-width="150" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="cron_expression" label="定时规则" width="120"></el-table-column>
-                <el-table-column label="状态" width="100">
+                <el-table-column prop="source_path" label="源路径" min-width="120" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="target_path" label="目标路径" min-width="120" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="cron_expression" label="定时" width="100"></el-table-column>
+                <el-table-column label="状态" width="80">
                   <template #default="scope">
                     <span :class="['status-badge', 'status-' + scope.row.status]">{{ scope.row.status }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="启用" width="80">
+                <el-table-column label="进度" width="120">
+                  <template #default="scope">
+                    <div v-if="scope.row.status === 'running'">
+                      <el-progress :percentage="taskProgress[scope.row.id] || 0" :stroke-width="10"></el-progress>
+                    </div>
+                    <span v-else style="color: #909399;">-</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="启用" width="70">
                   <template #default="scope">
                     <el-switch v-model="scope.row.enabled" @change="toggleTask(scope.row)"></el-switch>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="280">
+                <el-table-column label="操作" width="80" fixed="right">
                   <template #default="scope">
-                    <div class="mobile-actions">
-                      <el-button size="small" @click="runTask(scope.row.id)" :disabled="scope.row.status === 'running'">运行</el-button>
-                      <el-button size="small" type="danger" @click="stopTask(scope.row.id)" :disabled="scope.row.status !== 'running'">停止</el-button>
-                      <el-button size="small" @click="showTaskDialog(scope.row)">编辑</el-button>
-                      <el-button size="small" @click="showLogs(scope.row.id)">日志</el-button>
-                      <el-button size="small" type="danger" @click="deleteTask(scope.row.id)">删除</el-button>
-                    </div>
+                    <el-dropdown trigger="click">
+                      <el-button size="small">操作<i class="el-icon-arrow-down el-icon--right"></i></el-button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item @click="runTask(scope.row.id)" :disabled="scope.row.status === 'running'">运行</el-dropdown-item>
+                          <el-dropdown-item @click="stopTask(scope.row.id)" :disabled="scope.row.status !== 'running'">停止</el-dropdown-item>
+                          <el-dropdown-item @click="showTaskDialog(scope.row)">编辑</el-dropdown-item>
+                          <el-dropdown-item @click="showLogs(scope.row.id)">日志</el-dropdown-item>
+                          <el-dropdown-item @click="deleteTask(scope.row.id)" divided>删除</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
                   </template>
                 </el-table-column>
               </el-table>
@@ -249,6 +262,10 @@
       </el-dialog>
 
       <el-dialog v-model="logDialogVisible" title="任务日志" width="800px">
+        <div v-if="runningLog" style="margin-bottom: 15px; padding: 10px; background: #f0f9eb; border-radius: 4px;">
+          <el-progress :percentage="runningLog.progress" :status="runningLog.status === 'running' ? '' : (runningLog.status === 'success' ? 'success' : 'exception')"></el-progress>
+          <div style="margin-top: 5px; font-size: 12px; color: #606266;">{{ runningLog.progressText }}</div>
+        </div>
         <el-table :data="logs" stripe max-height="400">
           <el-table-column prop="id" label="ID" width="60"></el-table-column>
           <el-table-column prop="status" label="状态" width="100">
@@ -293,6 +310,10 @@
         const editingTask = ref(null);
         const editingServer = ref(null);
         const currentLogDetail = ref('');
+        const runningLog = ref(null);
+        const taskProgress = ref({});
+        let progressTimer = null;
+        let tableProgressTimer = null;
 
         const taskForm = reactive({
           name: '',
@@ -373,7 +394,12 @@
           if (task) {
             editingTask.value = task;
             Object.assign(taskForm, {
-              ...task,
+              name: task.name,
+              server_id: task.server_id,
+              module: task.module || '',
+              source_path: task.source_path,
+              target_path: task.target_path,
+              cron_expression: task.cron_expression || '',
               rsync_options: JSON.parse(task.rsync_options || '{}')
             });
           } else {
@@ -450,8 +476,9 @@
 
         const toggleTask = async (task) => {
           try {
-            await axios.put(`/api/tasks/${task.id}`, { ...task, enabled: task.enabled ? 1 : 0 });
+            await axios.put(`/api/tasks/${task.id}`, { enabled: task.enabled ? 1 : 0 });
             ElementPlus.ElMessage.success(task.enabled ? '任务已启用' : '任务已禁用');
+            await loadTasks();
           } catch (err) {
             ElementPlus.ElMessage.error('更新任务状态失败');
           }
@@ -462,9 +489,91 @@
             const res = await axios.get(`/api/tasks/${taskId}/logs`);
             logs.value = res.data.data;
             logDialogVisible.value = true;
+            
+            // 检查是否有正在运行的任务
+            const runningTask = tasks.value.find(t => t.id === taskId && t.status === 'running');
+            if (runningTask) {
+              startProgressPolling(taskId);
+            }
           } catch (err) {
             ElementPlus.ElMessage.error('加载日志失败');
           }
+        };
+
+        const startProgressPolling = (taskId) => {
+          if (progressTimer) clearInterval(progressTimer);
+          
+          progressTimer = setInterval(async () => {
+            try {
+              const res = await axios.get(`/api/tasks/${taskId}/logs`);
+              const currentLogs = res.data.data;
+              const runningEntry = currentLogs.find(l => l.status === 'running');
+              
+              if (runningEntry && runningEntry.message) {
+                const progress = parseProgress(runningEntry.message);
+                runningLog.value = {
+                  progress: progress.percent,
+                  progressText: progress.text,
+                  status: 'running'
+                };
+                taskProgress.value = { ...taskProgress.value, [taskId]: progress.percent };
+              } else {
+                clearInterval(progressTimer);
+                progressTimer = null;
+                runningLog.value = null;
+                const newProgress = { ...taskProgress.value };
+                delete newProgress[taskId];
+                taskProgress.value = newProgress;
+                logs.value = currentLogs;
+              }
+            } catch (err) {
+              console.error('[Progress Polling] Error:', err);
+            }
+          }, 1000);
+        };
+
+        const parseProgress = (message) => {
+          if (!message) return { percent: 0, text: '准备中...' };
+          
+          // 将 \r 转义序列替换为实际的回车符
+          const normalizedOutput = message.replace(/\\r/g, '\r');
+          
+          // 按 \r 分割，取最后一个片段（最新进度）
+          const crParts = normalizedOutput.split('\r');
+          const latestPart = crParts[crParts.length - 1].trim();
+          
+          if (!latestPart) return { percent: 0, text: '同步中...' };
+          
+          // 尝试从 to-chk 计算进度 (to-chk=剩余/总数)
+          const toChkMatch = latestPart.match(/to-chk=(\d+)\/(\d+)/);
+          if (toChkMatch) {
+            const remaining = parseInt(toChkMatch[1]);
+            const total = parseInt(toChkMatch[2]);
+            const processed = total - remaining;
+            const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
+            
+            const speedMatch = latestPart.match(/([\d.]+[KMGT]?B\/s)/);
+            let text = `已处理 ${processed}/${total} 文件`;
+            if (speedMatch) text += ` | 速度: ${speedMatch[1]}`;
+            
+            return { percent, text };
+          }
+          
+          // 尝试匹配单个文件进度: 12345 67% 1.23MB/s
+          const fileProgressMatch = latestPart.match(/[\d,]+\s+(\d+)%\s+([\d.]+[KMGT]?B\/s)/);
+          if (fileProgressMatch) {
+            const percent = parseInt(fileProgressMatch[1]);
+            const speed = fileProgressMatch[2];
+            return { percent, text: `传输中 ${percent}% | 速度: ${speed}` };
+          }
+          
+          // 简单百分比匹配
+          const percentMatch = latestPart.match(/(\d+)%/);
+          if (percentMatch) {
+            return { percent: parseInt(percentMatch[1]), text: '同步中...' };
+          }
+          
+          return { percent: 0, text: '同步中...' };
         };
 
         const viewLogDetail = (log) => {
@@ -575,12 +684,44 @@
           loadServers();
           loadWebDAVConfig();
           
-          // 每 10 秒刷新一次（降低频率）
+          // 每 10 秒刷新任务列表
           setInterval(() => {
             if (activeTab.value === 'tasks') {
               loadTasks();
             }
           }, 10000);
+          
+          // 每 2 秒更新运行中任务的进度
+          tableProgressTimer = setInterval(async () => {
+            // 直接查询所有任务的最新日志，而不是依赖任务状态
+            try {
+              const res = await axios.get('/api/tasks');
+              const allTasks = res.data.data;
+              
+              for (const task of allTasks) {
+                try {
+                  const logRes = await axios.get(`/api/tasks/${task.id}/logs`);
+                  const currentLogs = logRes.data.data;
+                  const runningEntry = currentLogs.find(l => l.status === 'running');
+                  
+                  if (runningEntry && runningEntry.message) {
+                    const progress = parseProgress(runningEntry.message);
+                    taskProgress.value = { ...taskProgress.value, [task.id]: progress.percent };
+                    console.log(`[Progress] Task ${task.id}: ${progress.percent}% - ${progress.text}`);
+                  } else {
+                    // 没有运行中的日志，清除进度
+                    const newProgress = { ...taskProgress.value };
+                    delete newProgress[task.id];
+                    taskProgress.value = newProgress;
+                  }
+                } catch (err) {
+                  console.error(`[Progress] Task ${task.id} error:`, err);
+                }
+              }
+            } catch (err) {
+              console.error('[Progress] Failed to fetch tasks:', err);
+            }
+          }, 2000);
         });
 
         return {
@@ -595,6 +736,8 @@
           editingTask,
           editingServer,
           currentLogDetail,
+          runningLog,
+          taskProgress,
           taskForm,
           serverForm,
           webdavForm,

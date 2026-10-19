@@ -135,7 +135,7 @@ const database = {
 
   getTaskLogs(taskId, limit = 50) {
     return db.get('taskLogs')
-      .filter({ task_id: parseInt(taskId) })
+      .filter({ task_id: String(taskId) })
       .sortBy('started_at')
       .reverse()
       .take(limit)
