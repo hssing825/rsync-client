@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  rsync-client-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: rsync-client-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - ./data:/app/data
+      - ./webdav-storage:/app/webdav-storage
+    environment:
+      - PORT=3000
+      - NODE_ENV=development
+    command: npm run dev
+    restart: unless-stopped
+    networks:
+      - rsync-network
+
+  # 可选：内置 rsync 服务器（用于测试）
+  rsync-server:
+    image: cattcloud/rsync:latest
+    container_name: rsync-server
+    ports:
+      - "873:873"
+    volumes:
+      - ./rsync-data:/data
+    environment:
+      - USERNAME=rsyncuser
+      - PASSWORD=rsyncpass123
+      - MODULE=backup
+      - PATH=/data
+    restart: unless-stopped
+    networks:
+      - rsync-network
+
+networks:
+  rsync-network:
+    driver: bridge

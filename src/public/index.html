@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rsync 备份管理</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus@2.4.4/dist/index.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; }
+    .app-container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .header { background: #409eff; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+    .header h1 { font-size: 24px; margin-bottom: 10px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+    .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+    .stat-card h3 { color: #606266; font-size: 14px; margin-bottom: 10px; }
+    .stat-card .value { font-size: 32px; font-weight: bold; color: #409eff; }
+    .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .card-header h2 { font-size: 18px; color: #303133; }
+    .table-responsive { overflow-x: auto; }
+    .el-table { width: 100%; }
+    .dialog-form .el-form-item { margin-bottom: 18px; }
+    .log-container { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; max-height: 500px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 13px; }
+    .log-container pre { margin: 0; white-space: pre-wrap; word-break: break-all; }
+    .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+    .status-idle { background: #e6e8eb; color: #606266; }
+    .status-running { background: #ecf5ff; color: #409eff; }
+    .status-success { background: #f0f9eb; color: #67c23a; }
+    .status-error { background: #fef0f0; color: #f56c6c; }
+    .status-stopped { background: #fdf6ec; color: #e6a23c; }
+    @media (max-width: 768px) {
+      .app-container { padding: 10px; }
+      .header h1 { font-size: 20px; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .card { padding: 15px; }
+      .el-dialog { width: 95% !important; }
+    }
+    .mobile-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .mobile-actions .el-button { flex: 1; min-width: 60px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="app-container">
+      <div class="header">
+        <h1>📦 Rsync 备份管理系统</h1>
+        <p>管理您的备份任务、服务器和 WebDAV 服务</p>
+      </div>
+
+      <div class="stats">
+        <div class="stat-card">
+          <h3>总任务数</h3>
+          <div class="value">{{ stats.totalTasks }}</div>
+        </div>
+        <div class="stat-card">
+          <h3>运行中</h3>
+          <div class="value" style="color: #67c23a;">{{ stats.runningTasks }}</div>
+        </div>
+        <div class="stat-card">
+          <h3>服务器数</h3>
+          <div class="value" style="color: #e6a23c;">{{ stats.totalServers }}</div>
+        </div>
+        <div class="stat-card">
+          <h3>WebDAV 状态</h3>
+          <div class="value" style="color: #f56c6c; font-size: 18px;">{{ webdavStatus }}</div>
+        </div>
+      </div>
+
+      <el-tabs v-model="activeTab" type="border-card">
+        <el-tab-pane label="任务管理" name="tasks">
+          <div class="card">
+            <div class="card-header">
+              <h2>备份任务</h2>
+              <el-button type="primary" @click="showTaskDialog()">添加任务</el-button>
+            </div>
+            <div class="table-responsive">
+              <el-table :data="tasks" stripe>
+                <el-table-column prop="id" label="ID" width="60"></el-table-column>
+                <el-table-column prop="name" label="任务名称" min-width="150"></el-table-column>
+                <el-table-column prop="server_name" label="服务器" min-width="120"></el-table-column>
+                <el-table-column prop="source_path" label="源路径" min-width="150" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="target_path" label="目标路径" min-width="150" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="cron_expression" label="定时规则" width="120"></el-table-column>
+                <el-table-column label="状态" width="100">
+                  <template #default="scope">
+                    <span :class="['status-badge', 'status-' + scope.row.status]">{{ scope.row.status }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="启用" width="80">
+                  <template #default="scope">
+                    <el-switch v-model="scope.row.enabled" @change="toggleTask(scope.row)"></el-switch>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="280">
+                  <template #default="scope">
+                    <div class="mobile-actions">
+                      <el-button size="small" @click="runTask(scope.row.id)" :disabled="scope.row.status === 'running'">运行</el-button>
+                      <el-button size="small" type="danger" @click="stopTask(scope.row.id)" :disabled="scope.row.status !== 'running'">停止</el-button>
+                      <el-button size="small" @click="showTaskDialog(scope.row)">编辑</el-button>
+                      <el-button size="small" @click="showLogs(scope.row.id)">日志</el-button>
+                      <el-button size="small" type="danger" @click="deleteTask(scope.row.id)">删除</el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="服务器管理" name="servers">
+          <div class="card">
+            <div class="card-header">
+              <h2>RSYNC 服务器</h2>
+              <el-button type="primary" @click="showServerDialog()">添加服务器</el-button>
+            </div>
+            <div class="table-responsive">
+              <el-table :data="servers" stripe>
+                <el-table-column prop="id" label="ID" width="60"></el-table-column>
+                <el-table-column prop="name" label="名称" min-width="120"></el-table-column>
+                <el-table-column prop="host" label="主机" min-width="150"></el-table-column>
+                <el-table-column prop="port" label="端口" width="80"></el-table-column>
+                <el-table-column prop="username" label="用户名" width="120"></el-table-column>
+                <el-table-column prop="module" label="模块" width="120"></el-table-column>
+                <el-table-column label="操作" width="200">
+                  <template #default="scope">
+                    <div class="mobile-actions">
+                      <el-button size="small" @click="testServer(scope.row)">测试</el-button>
+                      <el-button size="small" @click="showServerDialog(scope.row)">编辑</el-button>
+                      <el-button size="small" type="danger" @click="deleteServer(scope.row.id)">删除</el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="WebDAV 设置" name="webdav">
+          <div class="card">
+            <h2 style="margin-bottom: 20px;">WebDAV 服务器配置</h2>
+            <el-form :model="webdavForm" label-width="120px">
+              <el-form-item label="启用 WebDAV">
+                <el-switch v-model="webdavForm.enabled"></el-switch>
+              </el-form-item>
+              <el-form-item label="端口">
+                <el-input-number v-model="webdavForm.port" :min="1024" :max="65535"></el-input-number>
+              </el-form-item>
+              <el-form-item label="用户名">
+                <el-input v-model="webdavForm.username"></el-input>
+              </el-form-item>
+              <el-form-item label="密码">
+                <el-input v-model="webdavForm.password" type="password" show-password></el-input>
+              </el-form-item>
+              <el-form-item label="存储路径">
+                <el-input v-model="webdavForm.storage_path" placeholder="例如: ./webdav-storage"></el-input>
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" @click="saveWebDAVConfig">保存配置</el-button>
+                <el-button @click="loadWebDAVConfig">重新加载</el-button>
+              </el-form-item>
+            </el-form>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+
+      <el-dialog v-model="taskDialogVisible" :title="editingTask ? '编辑任务' : '添加任务'" width="600px">
+        <el-form :model="taskForm" label-width="120px" class="dialog-form">
+          <el-form-item label="任务名称" required>
+            <el-input v-model="taskForm.name" placeholder="输入任务名称"></el-input>
+          </el-form-item>
+          <el-form-item label="服务器" required>
+            <el-select v-model="taskForm.server_id" placeholder="选择服务器" style="width: 100%;">
+              <el-option v-for="server in servers" :key="server.id" :label="server.name" :value="server.id"></el-option>
+            </el-select>
+          </el-form-item>
+          <el-form-item label="源路径" required>
+            <el-input v-model="taskForm.source_path" placeholder="本地路径，例如: /data/backup"></el-input>
+          </el-form-item>
+          <el-form-item label="目标路径" required>
+            <el-input v-model="taskForm.target_path" placeholder="远程路径，例如: /backup"></el-input>
+          </el-form-item>
+          <el-form-item label="定时规则">
+            <el-input v-model="taskForm.cron_expression" placeholder="Cron 表达式，例如: 0 2 * * * (每天凌晨2点)"></el-input>
+            <div style="color: #909399; font-size: 12px; margin-top: 5px;">留空表示不自动运行，仅手动触发</div>
+          </el-form-item>
+          <el-divider>RSYNC 选项</el-divider>
+          <el-form-item label="删除目标文件">
+            <el-switch v-model="taskForm.rsync_options.delete"></el-switch>
+          </el-form-item>
+          <el-form-item label="显示进度">
+            <el-switch v-model="taskForm.rsync_options.progress"></el-switch>
+          </el-form-item>
+          <el-form-item label="压缩传输">
+            <el-switch v-model="taskForm.rsync_options.compress"></el-switch>
+          </el-form-item>
+          <el-form-item label="带宽限制 (KB)">
+            <el-input-number v-model="taskForm.rsync_options.bandwidth_limit" :min="0"></el-input-number>
+          </el-form-item>
+          <el-form-item label="排除文件">
+            <el-input v-model="taskForm.rsync_options.exclude" type="textarea" :rows="3" placeholder="每行一个模式，例如: *.tmp"></el-input>
+          </el-form-item>
+          <el-form-item label="包含文件">
+            <el-input v-model="taskForm.rsync_options.include" type="textarea" :rows="3" placeholder="每行一个模式"></el-input>
+          </el-form-item>
+          <el-form-item label="密码文件路径">
+            <el-input v-model="taskForm.rsync_options.password_file" placeholder="可选，用于免密认证"></el-input>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="taskDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="saveTask">保存</el-button>
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="serverDialogVisible" :title="editingServer ? '编辑服务器' : '添加服务器'" width="500px">
+        <el-form :model="serverForm" label-width="100px" class="dialog-form">
+          <el-form-item label="名称" required>
+            <el-input v-model="serverForm.name" placeholder="服务器名称"></el-input>
+          </el-form-item>
+          <el-form-item label="主机" required>
+            <el-input v-model="serverForm.host" placeholder="IP 或域名"></el-input>
+          </el-form-item>
+          <el-form-item label="端口">
+            <el-input-number v-model="serverForm.port" :min="1" :max="65535"></el-input-number>
+          </el-form-item>
+          <el-form-item label="用户名">
+            <el-input v-model="serverForm.username"></el-input>
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input v-model="serverForm.password" type="password" show-password></el-input>
+          </el-form-item>
+          <el-form-item label="模块">
+            <el-input v-model="serverForm.module" placeholder="rsync 模块名"></el-input>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="serverDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="saveServer">保存</el-button>
+        </template>
+      </el-dialog>
+
+      <el-dialog v-model="logDialogVisible" title="任务日志" width="800px">
+        <el-table :data="logs" stripe max-height="400">
+          <el-table-column prop="id" label="ID" width="60"></el-table-column>
+          <el-table-column prop="status" label="状态" width="100">
+            <template #default="scope">
+              <span :class="['status-badge', 'status-' + scope.row.status]">{{ scope.row.status }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="started_at" label="开始时间" width="180"></el-table-column>
+          <el-table-column prop="finished_at" label="结束时间" width="180"></el-table-column>
+          <el-table-column label="操作" width="100">
+            <template #default="scope">
+              <el-button size="small" @click="viewLogDetail(scope.row)">查看</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-dialog>
+
+      <el-dialog v-model="logDetailVisible" title="日志详情" width="800px">
+        <div class="log-container">
+          <pre>{{ currentLogDetail }}</pre>
+        </div>
+      </el-dialog>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.3.11/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/element-plus@2.4.4/dist/index.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.2/dist/axios.min.js"></script>
+  <script>
+    const { createApp, ref, reactive, computed, onMounted } = Vue;
+
+    const app = createApp({
+      setup() {
+        const activeTab = ref('tasks');
+        const tasks = ref([]);
+        const servers = ref([]);
+        const logs = ref([]);
+        const taskDialogVisible = ref(false);
+        const serverDialogVisible = ref(false);
+        const logDialogVisible = ref(false);
+        const logDetailVisible = ref(false);
+        const editingTask = ref(null);
+        const editingServer = ref(null);
+        const currentLogDetail = ref('');
+
+        const taskForm = reactive({
+          name: '',
+          server_id: null,
+          source_path: '',
+          target_path: '',
+          cron_expression: '',
+          rsync_options: {
+            delete: false,
+            progress: true,
+            compress: true,
+            bandwidth_limit: 0,
+            exclude: '',
+            include: '',
+            password_file: ''
+          }
+        });
+
+        const serverForm = reactive({
+          name: '',
+          host: '',
+          port: 873,
+          username: '',
+          password: '',
+          module: ''
+        });
+
+        const webdavForm = reactive({
+          enabled: false,
+          port: 8080,
+          username: '',
+          password: '',
+          storage_path: './webdav-storage'
+        });
+
+        const webdavStatus = computed(() => {
+          return '未配置';
+        });
+
+        const stats = computed(() => ({
+          totalTasks: tasks.value.length,
+          runningTasks: tasks.value.filter(t => t.status === 'running').length,
+          totalServers: servers.value.length
+        }));
+
+        const loadTasks = async () => {
+          try {
+            const res = await axios.get('/api/tasks');
+            tasks.value = res.data.data;
+          } catch (err) {
+            ElementPlus.ElMessage.error('加载任务失败');
+          }
+        };
+
+        const loadServers = async () => {
+          try {
+            const res = await axios.get('/api/servers');
+            servers.value = res.data.data;
+          } catch (err) {
+            ElementPlus.ElMessage.error('加载服务器失败');
+          }
+        };
+
+        const loadWebDAVConfig = async () => {
+          try {
+            const res = await axios.get('/api/webdav');
+            if (res.data.data) {
+              Object.assign(webdavForm, res.data.data);
+              webdavForm.enabled = res.data.data.enabled === 1;
+            }
+          } catch (err) {
+            console.error('加载 WebDAV 配置失败');
+          }
+        };
+
+        const showTaskDialog = (task = null) => {
+          if (task) {
+            editingTask.value = task;
+            Object.assign(taskForm, {
+              ...task,
+              rsync_options: JSON.parse(task.rsync_options || '{}')
+            });
+          } else {
+            editingTask.value = null;
+            Object.assign(taskForm, {
+              name: '',
+              server_id: null,
+              source_path: '',
+              target_path: '',
+              cron_expression: '',
+              rsync_options: {
+                delete: false,
+                progress: true,
+                compress: true,
+                bandwidth_limit: 0,
+                exclude: '',
+                include: '',
+                password_file: ''
+              }
+            });
+          }
+          taskDialogVisible.value = true;
+        };
+
+        const saveTask = async () => {
+          try {
+            if (editingTask.value) {
+              await axios.put(`/api/tasks/${editingTask.value.id}`, taskForm);
+              ElementPlus.ElMessage.success('任务已更新');
+            } else {
+              await axios.post('/api/tasks', taskForm);
+              ElementPlus.ElMessage.success('任务已创建');
+            }
+            taskDialogVisible.value = false;
+            await loadTasks();
+          } catch (err) {
+            ElementPlus.ElMessage.error('保存任务失败');
+          }
+        };
+
+        const deleteTask = async (id) => {
+          try {
+            await ElementPlus.ElMessageBox.confirm('确定要删除此任务吗？', '确认', { type: 'warning' });
+            await axios.delete(`/api/tasks/${id}`);
+            ElementPlus.ElMessage.success('任务已删除');
+            await loadTasks();
+          } catch (err) {
+            if (err !== 'cancel') {
+              ElementPlus.ElMessage.error('删除任务失败');
+            }
+          }
+        };
+
+        const runTask = async (id) => {
+          try {
+            await axios.post(`/api/tasks/${id}/run`);
+            ElementPlus.ElMessage.success('任务已启动');
+            await loadTasks();
+          } catch (err) {
+            ElementPlus.ElMessage.error('启动任务失败');
+          }
+        };
+
+        const stopTask = async (id) => {
+          try {
+            await axios.post(`/api/tasks/${id}/stop`);
+            ElementPlus.ElMessage.success('任务已停止');
+            await loadTasks();
+          } catch (err) {
+            ElementPlus.ElMessage.error('停止任务失败');
+          }
+        };
+
+        const toggleTask = async (task) => {
+          try {
+            await axios.put(`/api/tasks/${task.id}`, { ...task, enabled: task.enabled ? 1 : 0 });
+            ElementPlus.ElMessage.success(task.enabled ? '任务已启用' : '任务已禁用');
+          } catch (err) {
+            ElementPlus.ElMessage.error('更新任务状态失败');
+          }
+        };
+
+        const showLogs = async (taskId) => {
+          try {
+            const res = await axios.get(`/api/tasks/${taskId}/logs`);
+            logs.value = res.data.data;
+            logDialogVisible.value = true;
+          } catch (err) {
+            ElementPlus.ElMessage.error('加载日志失败');
+          }
+        };
+
+        const viewLogDetail = (log) => {
+          currentLogDetail.value = log.message || '无日志内容';
+          logDetailVisible.value = true;
+        };
+
+        const showServerDialog = (server = null) => {
+          if (server) {
+            editingServer.value = server;
+            Object.assign(serverForm, server);
+          } else {
+            editingServer.value = null;
+            Object.assign(serverForm, {
+              name: '',
+              host: '',
+              port: 873,
+              username: '',
+              password: '',
+              module: ''
+            });
+          }
+          serverDialogVisible.value = true;
+        };
+
+        const saveServer = async () => {
+          try {
+            if (editingServer.value) {
+              await axios.put(`/api/servers/${editingServer.value.id}`, serverForm);
+              ElementPlus.ElMessage.success('服务器已更新');
+            } else {
+              await axios.post('/api/servers', serverForm);
+              ElementPlus.ElMessage.success('服务器已添加');
+            }
+            serverDialogVisible.value = false;
+            await loadServers();
+          } catch (err) {
+            ElementPlus.ElMessage.error('保存服务器失败');
+          }
+        };
+
+        const deleteServer = async (id) => {
+          try {
+            await ElementPlus.ElMessageBox.confirm('确定要删除此服务器吗？', '确认', { type: 'warning' });
+            await axios.delete(`/api/servers/${id}`);
+            ElementPlus.ElMessage.success('服务器已删除');
+            await loadServers();
+          } catch (err) {
+            if (err !== 'cancel') {
+              ElementPlus.ElMessage.error('删除服务器失败');
+            }
+          }
+        };
+
+        const testServer = async (server) => {
+          try {
+            const loading = ElementPlus.ElMessage({
+              message: '正在测试连接...',
+              type: 'info',
+              duration: 0
+            });
+            
+            const res = await axios.post('/api/servers/test', server);
+            loading.close();
+            
+            if (res.data.success) {
+              ElementPlus.ElMessage.success('连接成功！');
+            } else {
+              ElementPlus.ElMessage.error(res.data.message);
+            }
+          } catch (err) {
+            ElementPlus.ElMessage.error('测试连接失败');
+          }
+        };
+
+        const saveWebDAVConfig = async () => {
+          try {
+            await axios.post('/api/webdav/configure', webdavForm);
+            ElementPlus.ElMessage.success('WebDAV 配置已保存');
+          } catch (err) {
+            ElementPlus.ElMessage.error('保存 WebDAV 配置失败');
+          }
+        };
+
+        onMounted(() => {
+          loadTasks();
+          loadServers();
+          loadWebDAVConfig();
+          
+          setInterval(() => {
+            if (activeTab.value === 'tasks') {
+              loadTasks();
+            }
+          }, 5000);
+        });
+
+        return {
+          activeTab,
+          tasks,
+          servers,
+          logs,
+          taskDialogVisible,
+          serverDialogVisible,
+          logDialogVisible,
+          logDetailVisible,
+          editingTask,
+          editingServer,
+          currentLogDetail,
+          taskForm,
+          serverForm,
+          webdavForm,
+          webdavStatus,
+          stats,
+          showTaskDialog,
+          saveTask,
+          deleteTask,
+          runTask,
+          stopTask,
+          toggleTask,
+          showLogs,
+          viewLogDetail,
+          showServerDialog,
+          saveServer,
+          deleteServer,
+          testServer,
+          saveWebDAVConfig,
+          loadWebDAVConfig
+        };
+      }
+    });
+
+    app.use(ElementPlus);
+    app.mount('#app');
+  </script>
+</body>
+</html>

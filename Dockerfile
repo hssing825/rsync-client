@@ -1,0 +1,19 @@
+FROM node:18-alpine
+
+RUN apk add --no-cache rsync
+
+WORKDIR /app
+
+COPY package*.json ./
+
+RUN npm install --production
+
+COPY src/ ./src/
+
+RUN mkdir -p /app/data /app/webdav-storage
+
+EXPOSE 3000
+
+VOLUME ["/app/data", "/app/webdav-storage"]
+
+CMD ["node", "src/server.js"]
