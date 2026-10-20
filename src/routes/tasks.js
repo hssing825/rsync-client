@@ -185,7 +185,10 @@ function buildRsyncArgs(task, options) {
   args.push('-avz');
   
   if (options.delete) args.push('--delete');
-  if (options.progress) args.push('--progress');
+  if (options.progress) {
+    // 使用 progress2 显示总体文件数量进度
+    args.push('--info=progress2');
+  }
   if (options.dry_run) args.push('--dry-run');
   if (options.compress) args.push('--compress');
   if (options.archive) args.push('--archive');

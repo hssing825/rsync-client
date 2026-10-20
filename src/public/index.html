@@ -92,9 +92,10 @@
                     <span :class="['status-badge', 'status-' + scope.row.status]">{{ scope.row.status }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="进度" width="120">
+                <el-table-column label="进度" width="180">
                   <template #default="scope">
                     <div v-if="scope.row.status === 'running'">
+                      <div style="font-size: 12px; color: #606266; margin-bottom: 4px;">{{ taskProgressText[scope.row.id] || '准备中...' }}</div>
                       <el-progress :percentage="taskProgress[scope.row.id] || 0" :stroke-width="10"></el-progress>
                     </div>
                     <span v-else style="color: #909399;">-</span>
@@ -312,8 +313,10 @@
         const currentLogDetail = ref('');
         const runningLog = ref(null);
         const taskProgress = ref({});
+        const taskProgressText = ref({});
         let progressTimer = null;
         let tableProgressTimer = null;
+        let globalRefreshTimer = null;
 
         const taskForm = reactive({
           name: '',
@@ -459,6 +462,8 @@
             await axios.post(`/api/tasks/${id}/run`);
             ElementPlus.ElMessage.success('任务已启动');
             await loadTasks();
+            // 启动全局任务状态刷新
+            startGlobalRefresh();
           } catch (err) {
             ElementPlus.ElMessage.error('启动任务失败');
           }
@@ -469,6 +474,8 @@
             await axios.post(`/api/tasks/${id}/stop`);
             ElementPlus.ElMessage.success('任务已停止');
             await loadTasks();
+            // 停止全局刷新
+            stopGlobalRefresh();
           } catch (err) {
             ElementPlus.ElMessage.error('停止任务失败');
           }
@@ -500,8 +507,48 @@
           }
         };
 
+        // 全局任务状态刷新
+        const startGlobalRefresh = () => {
+          if (globalRefreshTimer) return; // 避免重复启动
+          
+          globalRefreshTimer = setInterval(async () => {
+            try {
+              const res = await axios.get('/api/tasks');
+              const currentTasks = res.data.data;
+              const hasRunning = currentTasks.some(t => t.status === 'running');
+              
+              // 更新任务列表
+              tasks.value = currentTasks;
+              
+              // 如果没有运行中的任务，停止刷新
+              if (!hasRunning) {
+                stopGlobalRefresh();
+              }
+            } catch (err) {
+              console.error('[Global Refresh] Error:', err);
+            }
+          }, 1500);
+        };
+
+        const stopGlobalRefresh = () => {
+          if (globalRefreshTimer) {
+            clearInterval(globalRefreshTimer);
+            globalRefreshTimer = null;
+          }
+        };
+
         const startProgressPolling = (taskId) => {
           if (progressTimer) clearInterval(progressTimer);
+          if (tableProgressTimer) clearInterval(tableProgressTimer);
+          
+          // 定期刷新任务列表，确保运行状态正确显示
+          tableProgressTimer = setInterval(async () => {
+            try {
+              await loadTasks();
+            } catch (err) {
+              console.error('[Task List Refresh] Error:', err);
+            }
+          }, 2000);
           
           progressTimer = setInterval(async () => {
             try {
@@ -516,15 +563,22 @@
                   progressText: progress.text,
                   status: 'running'
                 };
-                taskProgress.value = { ...taskProgress.value, [taskId]: progress.percent };
+                // 直接修改对象属性，保持响应式
+                taskProgress.value[taskId] = progress.percent;
+                taskProgressText.value[taskId] = progress.text;
               } else {
+                // 任务已完成，清理定时器
                 clearInterval(progressTimer);
+                clearInterval(tableProgressTimer);
                 progressTimer = null;
+                tableProgressTimer = null;
                 runningLog.value = null;
-                const newProgress = { ...taskProgress.value };
-                delete newProgress[taskId];
-                taskProgress.value = newProgress;
+                // 直接删除属性，保持响应式
+                delete taskProgress.value[taskId];
+                delete taskProgressText.value[taskId];
                 logs.value = currentLogs;
+                // 最后刷新一次任务列表
+                await loadTasks();
               }
             } catch (err) {
               console.error('[Progress Polling] Error:', err);
@@ -538,37 +592,79 @@
           // 将 \r 转义序列替换为实际的回车符
           const normalizedOutput = message.replace(/\\r/g, '\r');
           
-          // 按 \r 分割，取最后一个片段（最新进度）
-          const crParts = normalizedOutput.split('\r');
-          const latestPart = crParts[crParts.length - 1].trim();
+          // 先按 \r 分割，再按 \n 分割，获取所有片段
+          const allParts = normalizedOutput.split(/[\r\n]+/).filter(p => p.trim());
           
-          if (!latestPart) return { percent: 0, text: '同步中...' };
+          if (allParts.length === 0) return { percent: 0, text: '同步中...' };
           
-          // 尝试从 to-chk 计算进度 (to-chk=剩余/总数)
-          const toChkMatch = latestPart.match(/to-chk=(\d+)\/(\d+)/);
+          // 从后往前查找包含 xfr# 的片段（文件传输进度信息）
+          let progressPart = '';
+          for (let i = allParts.length - 1; i >= 0; i--) {
+            const part = allParts[i].trim();
+            if (part.includes('xfr#')) {
+              progressPart = part;
+              break;
+            }
+          }
+          
+          // 如果没有找到 xfr#，查找包含 to-chk 的片段
+          if (!progressPart) {
+            for (let i = allParts.length - 1; i >= 0; i--) {
+              const part = allParts[i].trim();
+              if (part.includes('to-chk=')) {
+                progressPart = part;
+                break;
+              }
+            }
+          }
+          
+          // 如果还是没有，取最后一个片段
+          if (!progressPart) {
+            progressPart = allParts[allParts.length - 1].trim();
+          }
+          
+          if (!progressPart) return { percent: 0, text: '同步中...' };
+          
+          // 优先使用 xfr# 解析文件数量进度 (xfr#5, to-chk=1/8)
+          const xfrMatch = progressPart.match(/xfr#(\d+).*?to-chk=(\d+)\/(\d+)/);
+          if (xfrMatch) {
+            const transferred = parseInt(xfrMatch[1]);
+            const remaining = parseInt(xfrMatch[2]);
+            const total = parseInt(xfrMatch[3]);
+            const percent = total > 0 ? Math.round((transferred / total) * 100) : 0;
+            
+            const speedMatch = progressPart.match(/([\d.]+[KMGT]?B\/s)/);
+            let text = `${transferred}/${total}`;
+            if (speedMatch) text += ` (${speedMatch[1]})`;
+            
+            return { percent, text };
+          }
+          
+          // 备用：从 to-chk 计算进度 (to-chk=剩余/总数)
+          const toChkMatch = progressPart.match(/to-chk=(\d+)\/(\d+)/);
           if (toChkMatch) {
             const remaining = parseInt(toChkMatch[1]);
             const total = parseInt(toChkMatch[2]);
             const processed = total - remaining;
             const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
             
-            const speedMatch = latestPart.match(/([\d.]+[KMGT]?B\/s)/);
-            let text = `已处理 ${processed}/${total} 文件`;
-            if (speedMatch) text += ` | 速度: ${speedMatch[1]}`;
+            const speedMatch = progressPart.match(/([\d.]+[KMGT]?B\/s)/);
+            let text = `${processed}/${total}`;
+            if (speedMatch) text += ` (${speedMatch[1]})`;
             
             return { percent, text };
           }
           
           // 尝试匹配单个文件进度: 12345 67% 1.23MB/s
-          const fileProgressMatch = latestPart.match(/[\d,]+\s+(\d+)%\s+([\d.]+[KMGT]?B\/s)/);
+          const fileProgressMatch = progressPart.match(/[\d,]+\s+(\d+)%\s+([\d.]+[KMGT]?B\/s)/);
           if (fileProgressMatch) {
             const percent = parseInt(fileProgressMatch[1]);
             const speed = fileProgressMatch[2];
-            return { percent, text: `传输中 ${percent}% | 速度: ${speed}` };
+            return { percent, text: `${percent}% (${speed})` };
           }
           
           // 简单百分比匹配
-          const percentMatch = latestPart.match(/(\d+)%/);
+          const percentMatch = progressPart.match(/(\d+)%/);
           if (percentMatch) {
             return { percent: parseInt(percentMatch[1]), text: '同步中...' };
           }
@@ -684,38 +780,60 @@
           loadServers();
           loadWebDAVConfig();
           
-          // 每 10 秒刷新任务列表
-          setInterval(() => {
+          // 检查是否有运行中的任务，如果有则启动全局刷新
+          const checkRunningTasks = async () => {
+            try {
+              const res = await axios.get('/api/tasks');
+              const allTasks = res.data.data;
+              const hasRunning = allTasks.some(t => t.status === 'running');
+              
+              if (hasRunning) {
+                startGlobalRefresh();
+              }
+            } catch (err) {
+              console.error('[Init Check] Error:', err);
+            }
+          };
+          
+          // 页面加载时检查
+          checkRunningTasks();
+          
+          // 每 10 秒刷新任务列表（作为后备机制）
+          setInterval(async () => {
             if (activeTab.value === 'tasks') {
-              loadTasks();
+              await loadTasks();
+              // 同时检查是否有运行中的任务
+              const res = await axios.get('/api/tasks');
+              const allTasks = res.data.data;
+              const hasRunning = allTasks.some(t => t.status === 'running');
+              
+              if (hasRunning && !globalRefreshTimer) {
+                startGlobalRefresh();
+              }
             }
           }, 10000);
           
           // 每 2 秒更新运行中任务的进度
-          tableProgressTimer = setInterval(async () => {
-            // 直接查询所有任务的最新日志，而不是依赖任务状态
+          setInterval(async () => {
             try {
               const res = await axios.get('/api/tasks');
               const allTasks = res.data.data;
               
               for (const task of allTasks) {
-                try {
-                  const logRes = await axios.get(`/api/tasks/${task.id}/logs`);
-                  const currentLogs = logRes.data.data;
-                  const runningEntry = currentLogs.find(l => l.status === 'running');
-                  
-                  if (runningEntry && runningEntry.message) {
-                    const progress = parseProgress(runningEntry.message);
-                    taskProgress.value = { ...taskProgress.value, [task.id]: progress.percent };
-                    console.log(`[Progress] Task ${task.id}: ${progress.percent}% - ${progress.text}`);
-                  } else {
-                    // 没有运行中的日志，清除进度
-                    const newProgress = { ...taskProgress.value };
-                    delete newProgress[task.id];
-                    taskProgress.value = newProgress;
+                if (task.status === 'running') {
+                  try {
+                    const logRes = await axios.get(`/api/tasks/${task.id}/logs`);
+                    const currentLogs = logRes.data.data;
+                    const runningEntry = currentLogs.find(l => l.status === 'running');
+                    
+                    if (runningEntry && runningEntry.message) {
+                      const progress = parseProgress(runningEntry.message);
+                      taskProgress.value[task.id] = progress.percent;
+                      taskProgressText.value[task.id] = progress.text;
+                    }
+                  } catch (err) {
+                    console.error(`[Progress] Task ${task.id} error:`, err);
                   }
-                } catch (err) {
-                  console.error(`[Progress] Task ${task.id} error:`, err);
                 }
               }
             } catch (err) {
@@ -738,6 +856,7 @@
           currentLogDetail,
           runningLog,
           taskProgress,
+          taskProgressText,
           taskForm,
           serverForm,
           webdavForm,
