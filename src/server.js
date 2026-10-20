@@ -9,7 +9,7 @@ const taskRoutes = require('./routes/tasks');
 const webdavRoutes = require('./routes/webdav');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3002;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -41,6 +41,6 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(publicDir, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Rsync Client running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Rsync Client running on http://0.0.0.0:${PORT}`);
 });
