@@ -78,10 +78,18 @@
               <el-table :data="tasks" stripe>
                 <el-table-column prop="id" label="ID" width="60"></el-table-column>
                 <el-table-column prop="name" label="任务名称" min-width="120" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="server_name" label="服务器" min-width="100" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="module" label="模块" width="90">
+                <el-table-column label="类型" width="80">
                   <template #default="scope">
-                    <span>{{ scope.row.module || '(SSH)' }}</span>
+                    <el-tag :type="scope.row.sync_type === 'local' ? 'success' : 'primary'" size="small">
+                      {{ scope.row.sync_type === 'local' ? '本地' : '远程' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="server_name" label="服务器" min-width="100" show-overflow-tooltip></el-table-column>
+                <el-table-column label="模块" width="90" v-if="tasks.some(t => t.sync_type === 'remote')">
+                  <template #default="scope">
+                    <span v-if="scope.row.sync_type === 'remote'">{{ scope.row.module || '(SSH)' }}</span>
+                    <span v-else>-</span>
                   </template>
                 </el-table-column>
                 <el-table-column prop="source_path" label="源路径" min-width="120" show-overflow-tooltip></el-table-column>
@@ -190,20 +198,27 @@
           <el-form-item label="任务名称" required>
             <el-input v-model="taskForm.name" placeholder="输入任务名称"></el-input>
           </el-form-item>
-          <el-form-item label="服务器" required>
+          <el-form-item label="同步类型" required>
+            <el-radio-group v-model="taskForm.sync_type">
+              <el-radio label="remote">远程同步</el-radio>
+              <el-radio label="local">本地同步</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="taskForm.sync_type === 'remote'" label="服务器" required>
             <el-select v-model="taskForm.server_id" placeholder="选择服务器" style="width: 100%;">
               <el-option v-for="server in servers" :key="server.id" :label="server.name" :value="server.id"></el-option>
             </el-select>
           </el-form-item>
-          <el-form-item label="模块">
+          <el-form-item v-if="taskForm.sync_type === 'remote'" label="模块">
             <el-input v-model="taskForm.module" placeholder="rsync 模块名（留空则使用 SSH 模式）"></el-input>
             <div style="color: #909399; font-size: 12px; margin-top: 5px;">守护进程模式填写模块名，SSH 模式留空</div>
           </el-form-item>
           <el-form-item label="源路径" required>
-            <el-input v-model="taskForm.source_path" placeholder="本地路径，例如: /data/backup"></el-input>
+            <el-input v-model="taskForm.source_path" :placeholder="taskForm.sync_type === 'local' ? '本地源路径，例如: D:/data' : '本地路径，例如: /data/backup'"></el-input>
           </el-form-item>
           <el-form-item label="目标路径" required>
-            <el-input v-model="taskForm.target_path" placeholder="远程路径，例如: /backup"></el-input>
+            <el-input v-model="taskForm.target_path" :placeholder="taskForm.sync_type === 'local' ? '本地目标路径，例如: E:/backup 或 F:/ (USB)' : '远程路径，例如: /backup'"></el-input>
+            <div v-if="taskForm.sync_type === 'local'" style="color: #909399; font-size: 12px; margin-top: 5px;">支持硬盘路径或 USB 设备盘符</div>
           </el-form-item>
           <el-form-item label="定时规则">
             <el-input v-model="taskForm.cron_expression" placeholder="Cron 表达式，例如: 0 2 * * * (每天凌晨2点)"></el-input>
@@ -320,6 +335,7 @@
 
         const taskForm = reactive({
           name: '',
+          sync_type: 'remote',
           server_id: null,
           module: '',
           source_path: '',
@@ -398,6 +414,7 @@
             editingTask.value = task;
             Object.assign(taskForm, {
               name: task.name,
+              sync_type: task.sync_type || 'remote',
               server_id: task.server_id,
               module: task.module || '',
               source_path: task.source_path,
@@ -409,6 +426,7 @@
             editingTask.value = null;
             Object.assign(taskForm, {
               name: '',
+              sync_type: 'remote',
               server_id: null,
               module: '',
               source_path: '',

@@ -66,10 +66,10 @@ const database = {
     const tasks = db.get('tasks').sortBy('created_at').reverse().value();
     const servers = db.get('servers').value();
     return tasks.map(task => {
-      const server = servers.find(s => s.id === task.server_id);
+      const server = task.server_id ? servers.find(s => s.id === task.server_id) : null;
       return {
         ...task,
-        server_name: server ? server.name : '',
+        server_name: server ? server.name : (task.sync_type === 'local' ? '本地' : ''),
         server_host: server ? server.host : '',
         host: server ? server.host : task.host,
         port: server ? server.port : task.port,

@@ -241,6 +241,26 @@ function buildRsyncArgs(task, options) {
 }
 
 function buildTargetPath(task) {
+  const syncType = task.sync_type || 'remote';
+  
+  // 本地同步：直接返回目标路径
+  if (syncType === 'local') {
+    let targetPath = task.target_path || '';
+    // Windows 路径转换为 rsync 兼容格式
+    if (process.platform === 'win32') {
+      const winPathMatch = targetPath.match(/^([A-Za-z]):[\/\\]/);
+      if (winPathMatch) {
+        const drive = winPathMatch[1].toLowerCase();
+        const restPath = targetPath.substring(2).replace(/\\/g, '/');
+        targetPath = `/cygdrive/${drive}${restPath}`;
+      } else {
+        targetPath = targetPath.replace(/\\/g, '/');
+      }
+    }
+    return targetPath;
+  }
+  
+  // 远程同步
   const module = task.module ? task.module.trim() : '';
   const targetPath = task.target_path || '';
   
@@ -286,15 +306,21 @@ router.get('/:id', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, server_id, module, source_path, target_path, cron_expression, rsync_options } = req.body;
+    const { name, sync_type, server_id, module, source_path, target_path, cron_expression, rsync_options } = req.body;
     
-    if (!name || !server_id || !source_path || !target_path) {
+    if (!name || !source_path || !target_path) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
+    }
+
+    // 远程同步必须指定服务器，本地同步不需要
+    if (sync_type === 'remote' && !server_id) {
+      return res.status(400).json({ success: false, message: 'Remote sync requires a server' });
     }
 
     const result = db.addTask({
       name,
-      server_id: parseInt(server_id),
+      sync_type: sync_type || 'remote',
+      server_id: sync_type === 'local' ? null : parseInt(server_id),
       module: module || null,
       source_path,
       target_path,
@@ -325,7 +351,8 @@ router.put('/:id', (req, res) => {
     
     // 只更新实际提供的字段
     if (req.body.name !== undefined) updateData.name = req.body.name;
-    if (req.body.server_id !== undefined) updateData.server_id = parseInt(req.body.server_id);
+    if (req.body.sync_type !== undefined) updateData.sync_type = req.body.sync_type;
+    if (req.body.server_id !== undefined) updateData.server_id = req.body.sync_type === 'local' ? null : parseInt(req.body.server_id);
     if (req.body.module !== undefined) updateData.module = req.body.module || null;
     if (req.body.source_path !== undefined) updateData.source_path = req.body.source_path;
     if (req.body.target_path !== undefined) updateData.target_path = req.body.target_path;
