@@ -1,6 +1,6 @@
-FROM node:18-alpine
+FROM node:18-slim
 
-RUN apk add --no-cache rsync
+RUN apt-get update && apt-get install -y rsync && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
