@@ -122,12 +122,61 @@
                         <el-dropdown-menu>
                           <el-dropdown-item @click="runTask(scope.row.id)" :disabled="scope.row.status === 'running'">运行</el-dropdown-item>
                           <el-dropdown-item @click="stopTask(scope.row.id)" :disabled="scope.row.status !== 'running'">停止</el-dropdown-item>
+                          <el-dropdown-item @click="createSnapshot(scope.row.id)" :disabled="scope.row.sync_type !== 'local'">创建快照</el-dropdown-item>
                           <el-dropdown-item @click="showTaskDialog(scope.row)">编辑</el-dropdown-item>
                           <el-dropdown-item @click="showLogs(scope.row.id)">日志</el-dropdown-item>
                           <el-dropdown-item @click="deleteTask(scope.row.id)" divided>删除</el-dropdown-item>
                         </el-dropdown-menu>
                       </template>
                     </el-dropdown>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="快照管理" name="snapshots">
+          <div class="card">
+            <div class="card-header">
+              <h2>历史快照</h2>
+              <div>
+                <el-select v-model="snapshotFilter" placeholder="按任务筛选" style="width: 200px; margin-right: 10px;" clearable @change="loadSnapshots">
+                  <el-option v-for="task in tasks" :key="task.id" :label="task.name" :value="task.id"></el-option>
+                </el-select>
+                <el-button type="danger" @click="cleanOldSnapshots">清理旧快照</el-button>
+              </div>
+            </div>
+            <div class="table-responsive">
+              <el-table :data="snapshots" stripe>
+                <el-table-column prop="id" label="ID" width="60"></el-table-column>
+                <el-table-column prop="name" label="快照名称" min-width="180" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="task_name" label="关联任务" min-width="120" show-overflow-tooltip></el-table-column>
+                <el-table-column label="文件数" width="100">
+                  <template #default="scope">
+                    {{ scope.row.file_count || 0 }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="大小" width="120">
+                  <template #default="scope">
+                    {{ formatFileSize(scope.row.total_size || 0) }}
+                  </template>
+                </el-table-column>
+                <el-table-column prop="created_at" label="创建时间" width="180"></el-table-column>
+                <el-table-column label="状态" width="100">
+                  <template #default="scope">
+                    <el-tag :type="scope.row.status === 'completed' ? 'success' : 'warning'" size="small">
+                      {{ scope.row.status === 'completed' ? '已完成' : '处理中' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="250" fixed="right">
+                  <template #default="scope">
+                    <div class="mobile-actions">
+                      <el-button size="small" @click="viewSnapshotFiles(scope.row)">浏览文件</el-button>
+                      <el-button size="small" type="success" @click="showRestoreDialog(scope.row)">恢复</el-button>
+                      <el-button size="small" type="danger" @click="deleteSnapshot(scope.row.id)">删除</el-button>
+                    </div>
                   </template>
                 </el-table-column>
               </el-table>
@@ -304,6 +353,52 @@
           <pre>{{ currentLogDetail }}</pre>
         </div>
       </el-dialog>
+
+      <el-dialog v-model="snapshotFilesDialogVisible" :title="'快照文件 - ' + (currentSnapshot ? currentSnapshot.name : '')" width="900px">
+        <div style="margin-bottom: 15px;">
+          <el-input v-model="snapshotFileSearch" placeholder="搜索文件..." clearable style="width: 300px;"></el-input>
+        </div>
+        <el-table :data="filteredSnapshotFiles" stripe max-height="500">
+          <el-table-column label="类型" width="80">
+            <template #default="scope">
+              <span v-if="scope.row.type === 'directory'">📁</span>
+              <span v-else>📄</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="name" label="文件名" min-width="200" show-overflow-tooltip></el-table-column>
+          <el-table-column label="大小" width="120">
+            <template #default="scope">
+              {{ scope.row.type === 'file' ? formatFileSize(scope.row.size) : '-' }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="modified" label="修改时间" width="180"></el-table-column>
+        </el-table>
+      </el-dialog>
+
+      <el-dialog v-model="restoreDialogVisible" title="恢复快照" width="600px">
+        <el-form :model="restoreForm" label-width="120px">
+          <el-form-item label="快照名称">
+            <el-input v-model="restoreForm.snapshot_name" disabled></el-input>
+          </el-form-item>
+          <el-form-item label="恢复到路径" required>
+            <el-input v-model="restoreForm.restore_path" placeholder="例如: D:/restore"></el-input>
+            <div style="color: #909399; font-size: 12px; margin-top: 5px;">文件将恢复到此路径</div>
+          </el-form-item>
+          <el-form-item label="恢复模式">
+            <el-radio-group v-model="restoreForm.mode">
+              <el-radio label="full">完整恢复</el-radio>
+              <el-radio label="selective">选择性恢复</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="restoreForm.mode === 'selective'" label="选择文件">
+            <el-input v-model="restoreForm.selectedFiles" type="textarea" :rows="4" placeholder="每行一个文件或文件夹路径"></el-input>
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="restoreDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="restoreSnapshot">开始恢复</el-button>
+        </template>
+      </el-dialog>
     </div>
   </div>
 
@@ -319,10 +414,17 @@
         const tasks = ref([]);
         const servers = ref([]);
         const logs = ref([]);
+        const snapshots = ref([]);
+        const snapshotFiles = ref([]);
+        const snapshotFilter = ref(null);
+        const snapshotFileSearch = ref('');
+        const currentSnapshot = ref(null);
         const taskDialogVisible = ref(false);
         const serverDialogVisible = ref(false);
         const logDialogVisible = ref(false);
         const logDetailVisible = ref(false);
+        const snapshotFilesDialogVisible = ref(false);
+        const restoreDialogVisible = ref(false);
         const editingTask = ref(null);
         const editingServer = ref(null);
         const currentLogDetail = ref('');
@@ -332,6 +434,14 @@
         let progressTimer = null;
         let tableProgressTimer = null;
         let globalRefreshTimer = null;
+
+        const restoreForm = reactive({
+          snapshot_id: null,
+          snapshot_name: '',
+          restore_path: '',
+          mode: 'full',
+          selectedFiles: ''
+        });
 
         const taskForm = reactive({
           name: '',
@@ -793,10 +903,172 @@
           }
         };
 
+        const loadSnapshots = async () => {
+          try {
+            const params = {};
+            if (snapshotFilter.value) {
+              params.task_id = snapshotFilter.value;
+            }
+            const res = await axios.get('/api/snapshots', { params });
+            snapshots.value = res.data.data;
+          } catch (err) {
+            ElementPlus.ElMessage.error('加载快照失败');
+          }
+        };
+
+        const createSnapshot = async (taskId) => {
+          try {
+            const loading = ElementPlus.ElMessage({
+              message: '正在创建快照...',
+              type: 'info',
+              duration: 0
+            });
+            
+            const res = await axios.post(`/api/snapshots/tasks/${taskId}/create`);
+            loading.close();
+            
+            ElementPlus.ElMessage.success('快照创建成功');
+            await loadSnapshots();
+          } catch (err) {
+            ElementPlus.ElMessage.error(err.response?.data?.message || '创建快照失败');
+          }
+        };
+
+        const deleteSnapshot = async (id) => {
+          try {
+            await ElementPlus.ElMessageBox.confirm('确定要删除此快照吗？此操作不可恢复。', '确认', { type: 'warning' });
+            await axios.delete(`/api/snapshots/${id}`);
+            ElementPlus.ElMessage.success('快照已删除');
+            await loadSnapshots();
+          } catch (err) {
+            if (err !== 'cancel') {
+              ElementPlus.ElMessage.error('删除快照失败');
+            }
+          }
+        };
+
+        const viewSnapshotFiles = async (snapshot) => {
+          try {
+            currentSnapshot.value = snapshot;
+            const res = await axios.get(`/api/snapshots/${snapshot.id}/files`);
+            snapshotFiles.value = res.data.data;
+            snapshotFileSearch.value = '';
+            snapshotFilesDialogVisible.value = true;
+          } catch (err) {
+            ElementPlus.ElMessage.error('加载快照文件失败');
+          }
+        };
+
+        const showRestoreDialog = (snapshot) => {
+          currentSnapshot.value = snapshot;
+          Object.assign(restoreForm, {
+            snapshot_id: snapshot.id,
+            snapshot_name: snapshot.name,
+            restore_path: '',
+            mode: 'full',
+            selectedFiles: ''
+          });
+          restoreDialogVisible.value = true;
+        };
+
+        const restoreSnapshot = async () => {
+          if (!restoreForm.restore_path) {
+            ElementPlus.ElMessage.warning('请输入恢复路径');
+            return;
+          }
+
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              `确定要从快照 "${restoreForm.snapshot_name}" 恢复吗？`,
+              '确认恢复',
+              { type: 'warning' }
+            );
+
+            const loading = ElementPlus.ElMessage({
+              message: '正在恢复快照...',
+              type: 'info',
+              duration: 0
+            });
+
+            const body = {
+              restore_path: restoreForm.restore_path
+            };
+
+            if (restoreForm.mode === 'selective' && restoreForm.selectedFiles) {
+              body.files = restoreForm.selectedFiles.split('\n').filter(f => f.trim());
+            }
+
+            await axios.post(`/api/snapshots/${restoreForm.snapshot_id}/restore`, body);
+            loading.close();
+
+            ElementPlus.ElMessage.success('快照恢复成功');
+            restoreDialogVisible.value = false;
+          } catch (err) {
+            if (err !== 'cancel') {
+              ElementPlus.ElMessage.error(err.response?.data?.message || '恢复快照失败');
+            }
+          }
+        };
+
+        const cleanOldSnapshots = async () => {
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              '确定要清理 7 天前的旧快照吗？此操作不可恢复。',
+              '清理快照',
+              {
+                confirmButtonText: '确定',
+                cancelButtonText: '取消',
+                type: 'warning'
+              }
+            );
+            
+            const sevenDaysAgo = new Date();
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+            
+            const toDelete = snapshots.value.filter(s => new Date(s.created_at) < sevenDaysAgo);
+            
+            if (toDelete.length === 0) {
+              ElementPlus.ElMessage.info('没有 7 天前的快照需要清理');
+              return;
+            }
+
+            for (const snapshot of toDelete) {
+              await axios.delete(`/api/snapshots/${snapshot.id}`);
+            }
+            
+            ElementPlus.ElMessage.success(`已清理 ${toDelete.length} 个旧快照`);
+            await loadSnapshots();
+          } catch (err) {
+            if (err !== 'cancel') {
+              ElementPlus.ElMessage.error('清理快照失败');
+            }
+          }
+        };
+
+        const formatFileSize = (bytes) => {
+          if (bytes === 0) return '0 B';
+          const k = 1024;
+          const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+          const i = Math.floor(Math.log(bytes) / Math.log(k));
+          return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        };
+
+        const filteredSnapshotFiles = computed(() => {
+          if (!snapshotFileSearch.value) {
+            return snapshotFiles.value;
+          }
+          const search = snapshotFileSearch.value.toLowerCase();
+          return snapshotFiles.value.filter(f => 
+            f.name.toLowerCase().includes(search) || 
+            f.path.toLowerCase().includes(search)
+          );
+        });
+
         onMounted(() => {
           loadTasks();
           loadServers();
           loadWebDAVConfig();
+          loadSnapshots();
           
           // 检查是否有运行中的任务，如果有则启动全局刷新
           const checkRunningTasks = async () => {
@@ -865,10 +1137,17 @@
           tasks,
           servers,
           logs,
+          snapshots,
+          snapshotFiles,
+          snapshotFilter,
+          snapshotFileSearch,
+          currentSnapshot,
           taskDialogVisible,
           serverDialogVisible,
           logDialogVisible,
           logDetailVisible,
+          snapshotFilesDialogVisible,
+          restoreDialogVisible,
           editingTask,
           editingServer,
           currentLogDetail,
@@ -878,14 +1157,17 @@
           taskForm,
           serverForm,
           webdavForm,
+          restoreForm,
           webdavStatus,
           stats,
+          filteredSnapshotFiles,
           showTaskDialog,
           saveTask,
           deleteTask,
           runTask,
           stopTask,
           toggleTask,
+          createSnapshot,
           showLogs,
           viewLogDetail,
           showServerDialog,
@@ -894,7 +1176,14 @@
           testServer,
           saveWebDAVConfig,
           loadWebDAVConfig,
-          cleanLogs
+          cleanLogs,
+          loadSnapshots,
+          deleteSnapshot,
+          viewSnapshotFiles,
+          showRestoreDialog,
+          restoreSnapshot,
+          cleanOldSnapshots,
+          formatFileSize
         };
       }
     });

@@ -7,6 +7,7 @@ const db = require('./database');
 const serverRoutes = require('./routes/servers');
 const taskRoutes = require('./routes/tasks');
 const webdavRoutes = require('./routes/webdav');
+const snapshotRoutes = require('./routes/snapshots');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -26,6 +27,7 @@ app.use(express.static(publicDir));
 app.use('/api/servers', serverRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/webdav', webdavRoutes);
+app.use('/api/snapshots', snapshotRoutes);
 
 // 启动时清理旧日志（保留最近 7 天）
 try {

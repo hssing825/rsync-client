@@ -16,6 +16,7 @@ db.defaults({
   servers: [],
   tasks: [],
   taskLogs: [],
+  snapshots: [],
   webdavConfig: {
     enabled: false,
     port: 8080,
@@ -170,6 +171,40 @@ const database = {
 
   updateWebDAVConfig(data) {
     db.set('webdavConfig', { ...data, updated_at: new Date().toISOString() }).write();
+  },
+
+  addSnapshot(data) {
+    const id = generateId('snapshots');
+    const snapshot = {
+      id,
+      ...data,
+      created_at: new Date().toISOString()
+    };
+    db.get('snapshots').push(snapshot).write();
+    return { lastID: id };
+  },
+
+  getSnapshots(taskId = null, limit = 50) {
+    let query = db.get('snapshots');
+    if (taskId) {
+      query = query.filter({ task_id: parseInt(taskId) });
+    }
+    return query.sortBy('created_at').reverse().take(limit).value();
+  },
+
+  getSnapshot(id) {
+    return db.get('snapshots').find({ id: parseInt(id) }).value();
+  },
+
+  deleteSnapshot(id) {
+    db.get('snapshots').remove({ id: parseInt(id) }).write();
+  },
+
+  updateSnapshot(id, data) {
+    db.get('snapshots')
+      .find({ id: parseInt(id) })
+      .assign(data)
+      .write();
   }
 };
 

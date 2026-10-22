@@ -3,6 +3,7 @@ const db = require('../database');
 const { exec, spawn } = require('child_process');
 const cron = require('node-cron');
 const path = require('path');
+const fs = require('fs');
 
 const router = express.Router();
 
@@ -151,6 +152,10 @@ async function executeTask(taskId) {
     });
 
     db.updateTask(taskId, { status: status === 'success' ? 'idle' : 'error' });
+
+    if (code === 0 && task.sync_type === 'local') {
+      createSnapshotAfterBackup(taskId, task, sourcePath);
+    }
   });
 
   child.on('error', (error) => {
@@ -176,6 +181,102 @@ async function executeTask(taskId) {
     });
 
     db.updateTask(taskId, { status: 'error' });
+  });
+}
+
+function createSnapshotAfterBackup(taskId, task, sourcePath) {
+  const PROJECT_ROOT = path.join(__dirname, '..', '..');
+  const snapshotsDir = path.join(PROJECT_ROOT, 'data', 'snapshots');
+  
+  if (!fs.existsSync(snapshotsDir)) {
+    fs.mkdirSync(snapshotsDir, { recursive: true });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const snapshotName = `auto-${task.name}-${timestamp}`;
+  const snapshotPath = path.join(snapshotsDir, `task-${taskId}-${timestamp}`);
+
+  if (!fs.existsSync(snapshotPath)) {
+    fs.mkdirSync(snapshotPath, { recursive: true });
+  }
+
+  let targetPath = snapshotPath;
+  if (process.platform === 'win32') {
+    const winPathMatch = targetPath.match(/^([A-Za-z]):[\/\\]/);
+    if (winPathMatch) {
+      const drive = winPathMatch[1].toLowerCase();
+      const restPath = targetPath.substring(2).replace(/\\/g, '/');
+      targetPath = `/cygdrive/${drive}${restPath}`;
+    } else {
+      targetPath = targetPath.replace(/\\/g, '/');
+    }
+  }
+
+  console.log(`\n[Task ${taskId}] Creating snapshot: ${snapshotName}`);
+  console.log(`[Task ${taskId}] Snapshot path: ${targetPath}`);
+
+  const child = spawn('rsync', ['-avz', '--delete', sourcePath + '/', targetPath + '/']);
+  
+  let stdoutData = '';
+  let fileCount = 0;
+  let totalSize = 0;
+
+  child.stdout.on('data', (data) => {
+    const text = data.toString();
+    stdoutData += text;
+    
+    const lines = text.split('\n');
+    lines.forEach(line => {
+      if (line.trim() && !line.startsWith('sent') && !line.startsWith('total')) {
+        fileCount++;
+      }
+    });
+  });
+
+  child.stderr.on('data', (data) => {
+    console.error(`[Task ${taskId}] Snapshot error: ${data.toString()}`);
+  });
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      const sizeMatch = stdoutData.match(/total size is ([\d,]+)/);
+      if (sizeMatch) {
+        totalSize = parseInt(sizeMatch[1].replace(/,/g, ''));
+      }
+
+      db.addSnapshot({
+        task_id: taskId,
+        task_name: task.name,
+        name: snapshotName,
+        description: 'Auto snapshot after successful backup',
+        snapshot_path: snapshotPath,
+        source_path: task.source_path,
+        file_count: fileCount,
+        total_size: totalSize,
+        status: 'completed',
+        created_at: new Date().toISOString()
+      });
+
+      console.log(`[Task ${taskId}] Snapshot created successfully`);
+    } else {
+      console.error(`[Task ${taskId}] Snapshot creation failed with exit code ${code}`);
+      if (fs.existsSync(snapshotPath)) {
+        const isWindows = process.platform === 'win32';
+        const rmCmd = isWindows ? 'rmdir' : 'rm';
+        const rmArgs = isWindows ? ['/s', '/q', snapshotPath] : ['-rf', snapshotPath];
+        spawn(rmCmd, rmArgs);
+      }
+    }
+  });
+
+  child.on('error', (error) => {
+    console.error(`[Task ${taskId}] Snapshot creation error: ${error.message}`);
+    if (fs.existsSync(snapshotPath)) {
+      const isWindows = process.platform === 'win32';
+      const rmCmd = isWindows ? 'rmdir' : 'rm';
+      const rmArgs = isWindows ? ['/s', '/q', snapshotPath] : ['-rf', snapshotPath];
+      spawn(rmCmd, rmArgs);
+    }
   });
 }
 
