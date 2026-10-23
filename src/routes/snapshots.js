@@ -36,28 +36,16 @@ router.delete('/:id', (req, res) => {
     }
 
     if (snapshot.snapshot_path && fs.existsSync(snapshot.snapshot_path)) {
-      const isWindows = process.platform === 'win32';
-      const rmCmd = isWindows ? 'rmdir' : 'rm';
-      const rmArgs = isWindows ? ['/s', '/q', snapshot.snapshot_path] : ['-rf', snapshot.snapshot_path];
-      
-      const child = spawn(rmCmd, rmArgs);
-      
-      child.on('close', (code) => {
-        if (code === 0) {
-          db.deleteSnapshot(req.params.id);
-          res.json({ success: true, message: 'Snapshot deleted' });
-        } else {
-          res.status(500).json({ success: false, message: 'Failed to delete snapshot files' });
-        }
-      });
-      
-      child.on('error', (error) => {
-        res.status(500).json({ success: false, message: error.message });
-      });
-    } else {
-      db.deleteSnapshot(req.params.id);
-      res.json({ success: true, message: 'Snapshot deleted' });
+      try {
+        fs.rmSync(snapshot.snapshot_path, { recursive: true, force: true });
+        console.log(`[Snapshot] Deleted: ${snapshot.snapshot_path}`);
+      } catch (err) {
+        console.error(`[Snapshot] Failed to delete files: ${err.message}`);
+      }
     }
+
+    db.deleteSnapshot(req.params.id);
+    res.json({ success: true, message: 'Snapshot deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

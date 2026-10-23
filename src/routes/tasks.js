@@ -153,7 +153,7 @@ async function executeTask(taskId) {
 
     db.updateTask(taskId, { status: status === 'success' ? 'idle' : 'error' });
 
-    if (code === 0 && task.sync_type === 'local') {
+    if (code === 0 && task.sync_type === 'local' && task.auto_snapshot !== 0) {
       createSnapshotAfterBackup(taskId, task, sourcePath);
     }
   });
@@ -407,7 +407,7 @@ router.get('/:id', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, sync_type, server_id, module, source_path, target_path, cron_expression, rsync_options } = req.body;
+    const { name, sync_type, server_id, module, source_path, target_path, cron_expression, auto_snapshot, rsync_options } = req.body;
     
     if (!name || !source_path || !target_path) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
@@ -426,6 +426,7 @@ router.post('/', (req, res) => {
       source_path,
       target_path,
       cron_expression: cron_expression || null,
+      auto_snapshot: auto_snapshot !== undefined ? (auto_snapshot ? 1 : 0) : 1,
       rsync_options: JSON.stringify(rsync_options || {})
     });
 
@@ -458,6 +459,7 @@ router.put('/:id', (req, res) => {
     if (req.body.source_path !== undefined) updateData.source_path = req.body.source_path;
     if (req.body.target_path !== undefined) updateData.target_path = req.body.target_path;
     if (req.body.cron_expression !== undefined) updateData.cron_expression = req.body.cron_expression;
+    if (req.body.auto_snapshot !== undefined) updateData.auto_snapshot = req.body.auto_snapshot ? 1 : 0;
     if (req.body.enabled !== undefined) updateData.enabled = req.body.enabled ? 1 : 0;
     if (req.body.rsync_options !== undefined) updateData.rsync_options = JSON.stringify(req.body.rsync_options);
 
