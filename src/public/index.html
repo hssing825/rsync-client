@@ -111,7 +111,7 @@
                 </el-table-column>
                 <el-table-column label="启用" width="70">
                   <template #default="scope">
-                    <el-switch v-model="scope.row.enabled" @change="toggleTask(scope.row)"></el-switch>
+                    <el-switch v-model="scope.row.enabled" :active-value="1" :inactive-value="0" @change="toggleTask(scope.row)"></el-switch>
                   </template>
                 </el-table-column>
                 <el-table-column label="操作" width="80" fixed="right">
@@ -637,7 +637,7 @@
 
         // 全局任务状态刷新
         const startGlobalRefresh = () => {
-          if (globalRefreshTimer) return; // 避免重复启动
+          if (globalRefreshTimer) return;
           
           globalRefreshTimer = setInterval(async () => {
             try {
@@ -645,10 +645,15 @@
               const currentTasks = res.data.data;
               const hasRunning = currentTasks.some(t => t.status === 'running');
               
-              // 更新任务列表
               tasks.value = currentTasks;
               
-              // 如果没有运行中的任务，停止刷新
+              // 为所有运行中的任务启动进度轮询（如果没有的话）
+              currentTasks.forEach(task => {
+                if (task.status === 'running' && !taskProgress.value[task.id]) {
+                  startProgressPolling(task.id);
+                }
+              });
+              
               if (!hasRunning) {
                 stopGlobalRefresh();
               }
