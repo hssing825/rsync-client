@@ -162,7 +162,11 @@
                     {{ formatFileSize(scope.row.total_size || 0) }}
                   </template>
                 </el-table-column>
-                <el-table-column prop="created_at" label="创建时间" width="180"></el-table-column>
+                <el-table-column label="创建时间" width="180">
+                  <template #default="scope">
+                    {{ formatDateTime(scope.row.created_at) }}
+                  </template>
+                </el-table-column>
                 <el-table-column label="状态" width="100">
                   <template #default="scope">
                     <el-tag :type="scope.row.status === 'completed' ? 'success' : 'warning'" size="small">
@@ -342,8 +346,16 @@
               <span :class="['status-badge', 'status-' + scope.row.status]">{{ scope.row.status }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="started_at" label="开始时间" width="180"></el-table-column>
-          <el-table-column prop="finished_at" label="结束时间" width="180"></el-table-column>
+          <el-table-column label="开始时间" width="180">
+            <template #default="scope">
+              {{ formatDateTime(scope.row.started_at) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="结束时间" width="180">
+            <template #default="scope">
+              {{ formatDateTime(scope.row.finished_at) }}
+            </template>
+          </el-table-column>
           <el-table-column label="操作" width="100">
             <template #default="scope">
               <el-button size="small" @click="viewLogDetail(scope.row)">查看</el-button>
@@ -1065,6 +1077,19 @@
           return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         };
 
+        const formatDateTime = (dateStr) => {
+          if (!dateStr) return '-';
+          const date = new Date(dateStr);
+          if (isNaN(date.getTime())) return dateStr;
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const day = String(date.getDate()).padStart(2, '0');
+          const hours = String(date.getHours()).padStart(2, '0');
+          const minutes = String(date.getMinutes()).padStart(2, '0');
+          const seconds = String(date.getSeconds()).padStart(2, '0');
+          return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        };
+
         const filteredSnapshotFiles = computed(() => {
           if (!snapshotFileSearch.value) {
             return snapshotFiles.value;
@@ -1195,7 +1220,8 @@
           showRestoreDialog,
           restoreSnapshot,
           cleanOldSnapshots,
-          formatFileSize
+          formatFileSize,
+          formatDateTime
         };
       }
     });
