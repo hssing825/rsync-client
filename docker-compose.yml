@@ -11,6 +11,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./webdav-storage:/app/webdav-storage
+      - ./logs:/app/logs
     environment:
       - PORT=3000
       - NODE_ENV=production

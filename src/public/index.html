@@ -194,6 +194,41 @@
           </div>
         </el-tab-pane>
 
+        <el-tab-pane label="日志管理" name="logs">
+          <div class="card">
+            <div class="card-header">
+              <h2>日志文件</h2>
+              <div>
+                <el-button type="warning" @click="cleanAllLogs">清理旧日志</el-button>
+                <el-button type="primary" @click="loadLogFiles">刷新</el-button>
+              </div>
+            </div>
+            <div class="table-responsive">
+              <el-table :data="logFiles" stripe>
+                <el-table-column prop="date" label="日期" width="120"></el-table-column>
+                <el-table-column label="大小" width="120">
+                  <template #default="scope">
+                    {{ formatFileSize(scope.row.size) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="创建时间" width="180">
+                  <template #default="scope">
+                    {{ formatDateTime(scope.row.created) }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="200">
+                  <template #default="scope">
+                    <div class="mobile-actions">
+                      <el-button size="small" @click="viewLogFile(scope.row.date)">查看</el-button>
+                      <el-button size="small" type="danger" @click="deleteLogFile(scope.row.date)">删除</el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </el-tab-pane>
+
         <el-tab-pane label="服务器管理" name="servers">
           <div class="card">
             <div class="card-header">
@@ -420,6 +455,12 @@
         </div>
       </el-dialog>
 
+      <el-dialog v-model="logFileDetailVisible" :title="'日志文件 - ' + (currentLogFileDate || '')" width="900px">
+        <div class="log-container" style="max-height: 600px;">
+          <pre>{{ currentLogFileContent }}</pre>
+        </div>
+      </el-dialog>
+
       <el-dialog v-model="snapshotFilesDialogVisible" :title="'快照文件 - ' + (currentSnapshot ? currentSnapshot.name : '')" width="900px">
         <div style="margin-bottom: 15px;">
           <el-input v-model="snapshotFileSearch" placeholder="搜索文件..." clearable style="width: 300px;"></el-input>
@@ -500,6 +541,11 @@
         let progressTimer = null;
         let tableProgressTimer = null;
         let globalRefreshTimer = null;
+
+        const logFiles = ref([]);
+        const logFileDetailVisible = ref(false);
+        const currentLogFileDate = ref('');
+        const currentLogFileContent = ref('');
 
         const restoreForm = reactive({
           snapshot_id: null,
@@ -996,7 +1042,7 @@
         const cleanLogs = async () => {
           try {
             await ElementPlus.ElMessageBox.confirm(
-              '确定要清理 7 天前的旧日志吗？此操作不可恢复。',
+              '确定要清理 30 天前的旧日志吗？此操作不可恢复。',
               '清理日志',
               {
                 confirmButtonText: '确定',
@@ -1005,8 +1051,84 @@
               }
             );
             
-            const res = await axios.post('/api/tasks/logs/clean', { days: 7 });
+            const res = await axios.post('/api/tasks/logs/clean', { days: 30 });
             ElementPlus.ElMessage.success(`已清理 ${res.data.cleaned} 条旧日志`);
+          } catch (err) {
+            if (err !== 'cancel') {
+              ElementPlus.ElMessage.error('清理日志失败');
+            }
+          }
+        };
+
+        // 日志文件管理
+        const loadLogFiles = async () => {
+          try {
+            const res = await axios.get('/api/logs');
+            logFiles.value = res.data.data || [];
+          } catch (err) {
+            ElementPlus.ElMessage.error('加载日志文件列表失败');
+          }
+        };
+
+        const viewLogFile = async (date) => {
+          try {
+            const res = await axios.get(`/api/logs/${date}`);
+            if (res.data.data) {
+              currentLogFileDate.value = date;
+              // 格式化日志内容为可读文本
+              currentLogFileContent.value = res.data.data.map(log => {
+                const time = log.started_at ? new Date(log.started_at).toLocaleString('zh-CN') : '未知时间';
+                const status = log.status || 'unknown';
+                const message = log.message || '';
+                const finished = log.finished_at ? ` | 结束: ${new Date(log.finished_at).toLocaleString('zh-CN')}` : '';
+                return `[${time}] [${status}] Task ${log.task_id}${finished}\n${message}\n${'='.repeat(80)}\n`;
+              }).join('\n');
+              logFileDetailVisible.value = true;
+            } else {
+              ElementPlus.ElMessage.warning('日志文件为空');
+            }
+          } catch (err) {
+            ElementPlus.ElMessage.error('加载日志文件失败');
+          }
+        };
+
+        const deleteLogFile = async (date) => {
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              `确定要删除 ${date} 的日志文件吗？此操作不可恢复。`,
+              '删除日志',
+              {
+                confirmButtonText: '确定',
+                cancelButtonText: '取消',
+                type: 'warning'
+              }
+            );
+            
+            await axios.delete(`/api/logs/${date}`);
+            ElementPlus.ElMessage.success('日志文件已删除');
+            await loadLogFiles();
+          } catch (err) {
+            if (err !== 'cancel') {
+              ElementPlus.ElMessage.error('删除日志文件失败');
+            }
+          }
+        };
+
+        const cleanAllLogs = async () => {
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              '确定要清理 30 天前的所有旧日志文件吗？此操作不可恢复。',
+              '清理所有日志',
+              {
+                confirmButtonText: '确定',
+                cancelButtonText: '取消',
+                type: 'warning'
+              }
+            );
+            
+            const res = await axios.post('/api/tasks/logs/clean', { days: 30 });
+            ElementPlus.ElMessage.success(`已清理 ${res.data.cleaned || 0} 个旧日志文件`);
+            await loadLogFiles();
           } catch (err) {
             if (err !== 'cancel') {
               ElementPlus.ElMessage.error('清理日志失败');
@@ -1193,6 +1315,7 @@
           loadServers();
           loadWebDAVConfig();
           loadSnapshots();
+          loadLogFiles();
           
           // 检查是否有运行中的任务，如果有则启动全局刷新
           const checkRunningTasks = async () => {
@@ -1270,6 +1393,10 @@
           serverDialogVisible,
           logDialogVisible,
           logDetailVisible,
+          logFileDetailVisible,
+          logFiles,
+          currentLogFileDate,
+          currentLogFileContent,
           snapshotFilesDialogVisible,
           restoreDialogVisible,
           editingTask,
@@ -1301,6 +1428,10 @@
           saveWebDAVConfig,
           loadWebDAVConfig,
           cleanLogs,
+          loadLogFiles,
+          viewLogFile,
+          deleteLogFile,
+          cleanAllLogs,
           loadSnapshots,
           deleteSnapshot,
           viewSnapshotFiles,

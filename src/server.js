@@ -29,15 +29,50 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/webdav', webdavRoutes);
 app.use('/api/snapshots', snapshotRoutes);
 
-// 启动时清理旧日志（保留最近 7 天）
+// 启动时清理旧日志（保留最近 30 天）
 try {
-  const cleaned = db.cleanOldLogs(7);
-  if (cleaned && cleaned.length > 0) {
-    console.log(`[Startup] Cleaned ${cleaned.length} old log entries`);
-  }
+  const cleaned = db.cleanOldLogs(30);
+  console.log(`[Startup] Cleaned old log files: ${cleaned}`);
 } catch (err) {
   console.error('[Startup] Failed to clean old logs:', err.message);
 }
+
+// 日志管理 API
+app.get('/api/logs', (req, res) => {
+  try {
+    const logFiles = db.getLogFileList();
+    res.json({ success: true, data: logFiles });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.get('/api/logs/:date', (req, res) => {
+  try {
+    const logs = db.getLogFileContent(req.params.date);
+    if (logs === null) {
+      return res.status(404).json({ success: false, message: 'Log file not found' });
+    }
+    res.json({ success: true, data: logs });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.delete('/api/logs/:date', (req, res) => {
+  try {
+    const logDir = path.join(__dirname, '..', 'logs');
+    const logFile = path.join(logDir, `task-${req.params.date}.log`);
+    if (fs.existsSync(logFile)) {
+      fs.unlinkSync(logFile);
+      res.json({ success: true, message: 'Log file deleted' });
+    } else {
+      res.status(404).json({ success: false, message: 'Log file not found' });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(publicDir, 'index.html'));

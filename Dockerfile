@@ -10,10 +10,10 @@ RUN npm install --production
 
 COPY src/ ./src/
 
-RUN mkdir -p /app/data /app/webdav-storage
+RUN mkdir -p /app/data /app/webdav-storage /app/logs
 
 EXPOSE 3000
 
-VOLUME ["/app/data", "/app/webdav-storage"]
+VOLUME ["/app/data", "/app/webdav-storage", "/app/logs"]
 
 CMD ["node", "src/server.js"]

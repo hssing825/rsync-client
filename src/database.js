@@ -2,6 +2,7 @@ const low = require('lowdb');
 const FileSync = require('lowdb/adapters/FileSync');
 const path = require('path');
 const fs = require('fs');
+const logger = require('./logger');
 
 const dataDir = path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) {
@@ -15,7 +16,6 @@ const db = low(adapter);
 db.defaults({
   servers: [],
   tasks: [],
-  taskLogs: [],
   snapshots: [],
   webdavConfig: {
     enabled: false,
@@ -80,17 +80,8 @@ const database = {
     });
   },
 
-  cleanOldLogs(maxAgeDays = 7) {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - maxAgeDays);
-    const cutoffStr = cutoffDate.toISOString();
-    
-    const removed = db.get('taskLogs')
-      .remove(log => log.finished_at && log.finished_at < cutoffStr)
-      .value();
-    
-    console.log(`[Database] Cleaned ${removed ? removed.length : 0} old logs`);
-    return removed;
+  cleanOldLogs(maxAgeDays = 30) {
+    return logger.cleanOldLogs(maxAgeDays);
   },
 
   getTask(id) {
@@ -131,38 +122,33 @@ const database = {
 
   deleteTask(id) {
     db.get('tasks').remove({ id: parseInt(id) }).write();
-    db.get('taskLogs').remove({ task_id: parseInt(id) }).write();
+    logger.deleteTaskLogs(id);
   },
 
   getTaskLogs(taskId, limit = 50) {
-    return db.get('taskLogs')
-      .filter({ task_id: String(taskId) })
-      .sortBy('started_at')
-      .reverse()
-      .take(limit)
-      .value();
+    return logger.getTaskLogs(taskId, limit);
   },
 
   getLog(logId) {
-    return db.get('taskLogs').find({ id: parseInt(logId) }).value();
+    return logger.getLog(logId);
   },
 
   addLog(data) {
-    const id = generateId('taskLogs');
-    const log = {
-      id,
-      ...data,
-      started_at: new Date().toISOString()
-    };
-    db.get('taskLogs').push(log).write();
-    return { lastID: id };
+    return logger.addLog(data);
   },
 
   updateLog(logId, data) {
-    db.get('taskLogs')
-      .find({ id: parseInt(logId) })
-      .assign(data)
-      .write();
+    logger.updateLog(logId, data);
+  },
+
+  // 新增：获取日志文件列表
+  getLogFileList() {
+    return logger.getLogFileList();
+  },
+
+  // 新增：获取指定日期的日志内容
+  getLogFileContent(dateStr) {
+    return logger.getLogFileContent(dateStr);
   },
 
   getWebDAVConfig() {
