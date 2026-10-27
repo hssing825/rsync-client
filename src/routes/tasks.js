@@ -4,6 +4,7 @@ const { exec, spawn } = require('child_process');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
+const OpenListSync = require('../cloud/openlist');
 
 const router = express.Router();
 
@@ -41,6 +42,12 @@ async function executeTask(taskId) {
   if (!task) return;
 
   const startTime = Date.now();
+
+  // 检查是否是 OpenList 同步任务
+  if (task.sync_type === 'openlist') {
+    await executeOpenListTask(taskId, task, startTime);
+    return;
+  }
 
   // 解析源路径：支持相对路径和绝对路径
   let sourcePath = task.source_path;
@@ -182,6 +189,105 @@ async function executeTask(taskId) {
 
     db.updateTask(taskId, { status: 'error' });
   });
+}
+
+async function executeOpenListTask(taskId, task, startTime) {
+  console.log(`\n[Task ${taskId}] Starting OpenList sync: ${task.name}`);
+
+  const logEntry = db.addLog({
+    task_id: taskId,
+    status: 'running',
+    message: 'OpenList 同步开始'
+  });
+
+  db.updateTask(taskId, { status: 'running', last_run_at: new Date().toISOString() });
+
+  try {
+    // 获取服务器配置
+    const server = db.getServer(task.server_id);
+    if (!server) {
+      throw new Error('Server not found');
+    }
+
+    // 创建 OpenList 同步实例
+    const openlistSync = new OpenListSync({
+      username: server.username,
+      password: server.password,
+      webdav_url: server.webdav_url,
+      remote_path: task.target_path,
+      max_retries: 3,
+      retry_delay: 5000
+    });
+
+    // 执行同步
+    const result = await openlistSync.sync(task, {
+      onProgress: (percent, completed, total, currentFile) => {
+        const progressMsg = `进度: ${percent}% (${completed}/${total}) - ${currentFile}`;
+        console.log(`[Task ${taskId}] ${progressMsg}`);
+        db.updateLog(logEntry.lastID, {
+          status: 'running',
+          message: progressMsg
+        });
+      },
+      onFileComplete: (relativePath, status, errorMessage) => {
+        const statusText = status === 'skipped' ? '跳过' : status === true ? '成功' : `失败: ${errorMessage}`;
+        console.log(`[Task ${taskId}] ${relativePath}: ${statusText}`);
+      }
+    });
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    const status = result.success ? 'success' : 'failed';
+    const statusText = result.success ? '成功' : '失败';
+    
+    const fullLog = [
+      `=== OpenList 同步${statusText} ===`,
+      `任务: ${task.name}`,
+      `源路径: ${task.source_path}`,
+      `目标: ${server.webdav_url}${task.target_path}`,
+      ``,
+      `统计:`,
+      `- 上传文件: ${result.uploadedFiles || 0}`,
+      `- 跳过文件: ${result.skippedFiles || 0}`,
+      `- 失败文件: ${result.failedFiles || 0}`,
+      `- 总文件数: ${result.totalFiles || 0}`,
+      `- 耗时: ${duration}s`,
+      ``,
+      `消息: ${result.message}`
+    ].join('\n');
+
+    console.log(`\n[Task ${taskId}] ${fullLog}`);
+
+    db.updateLog(logEntry.lastID, {
+      status,
+      message: fullLog,
+      finished_at: new Date().toISOString()
+    });
+
+    db.updateTask(taskId, { status: status === 'success' ? 'idle' : 'error' });
+
+  } catch (error) {
+    console.error(`\n[Task ${taskId}] OpenList sync error: ${error.message}`);
+    
+    const fullLog = [
+      `=== OpenList 同步失败 ===`,
+      `任务: ${task.name}`,
+      `错误: ${error.message}`,
+      ``,
+      `=== 故障排查 ===`,
+      `1. 检查 OpenList 服务是否运行`,
+      `2. 验证 WebDAV 地址是否正确`,
+      `3. 检查用户名和密码`,
+      `4. 确认网络连接正常`
+    ].join('\n');
+
+    db.updateLog(logEntry.lastID, {
+      status: 'error',
+      message: fullLog,
+      finished_at: new Date().toISOString()
+    });
+
+    db.updateTask(taskId, { status: 'error' });
+  }
 }
 
 function createSnapshotAfterBackup(taskId, task, sourcePath) {
@@ -407,26 +513,27 @@ router.get('/:id', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, sync_type, server_id, module, source_path, target_path, cron_expression, auto_snapshot, rsync_options } = req.body;
+    const { name, sync_type, server_id, module, source_path, target_path, cron_expression, auto_snapshot, rsync_options, sync_mode } = req.body;
     
     if (!name || !source_path || !target_path) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
 
-    // 远程同步必须指定服务器，本地同步不需要
-    if (sync_type === 'remote' && !server_id) {
-      return res.status(400).json({ success: false, message: 'Remote sync requires a server' });
+    // 远程同步和 OpenList 同步必须指定服务器，本地同步不需要
+    if ((sync_type === 'remote' || sync_type === 'openlist') && !server_id) {
+      return res.status(400).json({ success: false, message: 'Remote/OpenList sync requires a server' });
     }
 
     const result = db.addTask({
       name,
       sync_type: sync_type || 'remote',
-      server_id: sync_type === 'local' ? null : parseInt(server_id),
+      server_id: (sync_type === 'local') ? null : parseInt(server_id),
       module: module || null,
       source_path,
       target_path,
       cron_expression: cron_expression || null,
       auto_snapshot: auto_snapshot !== undefined ? (auto_snapshot ? 1 : 0) : 1,
+      sync_mode: sync_mode || 'incremental',
       rsync_options: JSON.stringify(rsync_options || {})
     });
 
@@ -461,6 +568,7 @@ router.put('/:id', (req, res) => {
     if (req.body.cron_expression !== undefined) updateData.cron_expression = req.body.cron_expression;
     if (req.body.auto_snapshot !== undefined) updateData.auto_snapshot = req.body.auto_snapshot ? 1 : 0;
     if (req.body.enabled !== undefined) updateData.enabled = req.body.enabled ? 1 : 0;
+    if (req.body.sync_mode !== undefined) updateData.sync_mode = req.body.sync_mode;
     if (req.body.rsync_options !== undefined) updateData.rsync_options = JSON.stringify(req.body.rsync_options);
 
     db.updateTask(req.params.id, updateData);

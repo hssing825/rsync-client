@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../database');
+const WebDAVSync = require('../cloud/webdav');
 
 const router = express.Router();
 
@@ -26,20 +27,47 @@ router.get('/:id', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, host, port, username, password, module } = req.body;
+    const { name, host, port, username, password, module, server_type, cloud_type, webdav_url } = req.body;
     
-    if (!name || !host) {
-      return res.status(400).json({ success: false, message: 'Name and host are required' });
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'Name is required' });
     }
 
-    const result = db.addServer({
+    const serverData = {
       name,
-      host,
-      port: port || 873,
-      username: username || null,
-      password: password || null,
-      module: module || null
-    });
+      server_type: server_type || 'rsync',
+      cloud_type: cloud_type || null,
+      webdav_url: webdav_url || null
+    };
+
+    if (server_type === 'openlist') {
+      serverData.server_type = 'openlist';
+      serverData.cloud_type = 'openlist';
+      serverData.username = username || null;
+      serverData.password = password || null;
+      serverData.webdav_url = webdav_url || null;
+      serverData.host = null;
+      serverData.port = null;
+      serverData.module = null;
+    } else if (server_type === 'cloud') {
+      serverData.cloud_type = cloud_type || 'webdav';
+      serverData.username = username || null;
+      serverData.password = password || null;
+      serverData.host = null;
+      serverData.port = null;
+      serverData.module = null;
+    } else {
+      if (!host) {
+        return res.status(400).json({ success: false, message: 'Host is required for rsync server' });
+      }
+      serverData.host = host;
+      serverData.port = port || 873;
+      serverData.username = username || null;
+      serverData.password = password || null;
+      serverData.module = module || null;
+    }
+
+    const result = db.addServer(serverData);
 
     res.status(201).json({ success: true, data: { id: result.lastID } });
   } catch (err) {
@@ -49,21 +77,45 @@ router.post('/', (req, res) => {
 
 router.put('/:id', (req, res) => {
   try {
-    const { name, host, port, username, password, module } = req.body;
+    const { name, host, port, username, password, module, server_type, cloud_type, webdav_url } = req.body;
     
     const server = db.getServer(req.params.id);
     if (!server) {
       return res.status(404).json({ success: false, message: 'Server not found' });
     }
 
-    db.updateServer(req.params.id, {
-      name,
-      host,
-      port,
-      username,
-      password,
-      module
-    });
+    const updateData = { name };
+
+    if (server_type === 'openlist') {
+      updateData.server_type = 'openlist';
+      updateData.cloud_type = 'openlist';
+      updateData.username = username !== undefined ? username : server.username;
+      updateData.password = password !== undefined ? password : server.password;
+      updateData.webdav_url = webdav_url !== undefined ? webdav_url : server.webdav_url;
+      updateData.host = null;
+      updateData.port = null;
+      updateData.module = null;
+    } else if (server_type === 'cloud') {
+      updateData.server_type = 'cloud';
+      updateData.cloud_type = cloud_type || server.cloud_type || 'webdav';
+      updateData.username = username !== undefined ? username : server.username;
+      updateData.password = password !== undefined ? password : server.password;
+      updateData.webdav_url = webdav_url !== undefined ? webdav_url : server.webdav_url;
+      updateData.host = null;
+      updateData.port = null;
+      updateData.module = null;
+    } else {
+      updateData.server_type = 'rsync';
+      updateData.host = host !== undefined ? host : server.host;
+      updateData.port = port !== undefined ? port : server.port;
+      updateData.username = username !== undefined ? username : server.username;
+      updateData.password = password !== undefined ? password : server.password;
+      updateData.module = module !== undefined ? module : server.module;
+      updateData.cloud_type = null;
+      updateData.webdav_url = null;
+    }
+
+    db.updateServer(req.params.id, updateData);
 
     res.json({ success: true });
   } catch (err) {
@@ -85,9 +137,40 @@ router.delete('/:id', (req, res) => {
   }
 });
 
-router.post('/test', (req, res) => {
-  const { host, port, username, password, module } = req.body;
+router.post('/test', async (req, res) => {
+  const { host, port, username, password, module, server_type, webdav_url } = req.body;
   
+  if (server_type === 'openlist' || server_type === 'cloud') {
+    try {
+      const webdav = new WebDAVSync({
+        username: username,
+        password: password,
+        webdav_url: webdav_url
+      });
+      
+      const result = await webdav.testConnection();
+      
+      if (result.success) {
+        return res.json({ 
+          success: true, 
+          message: server_type === 'openlist' ? 'OpenList连接成功' : 'WebDAV连接成功',
+          userInfo: result.userInfo
+        });
+      } else {
+        return res.json({ 
+          success: false, 
+          message: result.message
+        });
+      }
+    } catch (error) {
+      return res.json({ 
+        success: false, 
+        message: `连接失败: ${error.message}`
+      });
+    }
+  }
+  
+  // RSYNC server test
   if (!host) {
     return res.status(400).json({ success: false, message: 'Host is required' });
   }
