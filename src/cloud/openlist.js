@@ -53,8 +53,9 @@ class OpenListSync {
     try {
       // 解析排除规则
       const excludePatterns = [];
+      let rsyncOptions = {};
       if (task.rsync_options) {
-        const rsyncOptions = typeof task.rsync_options === 'string' 
+        rsyncOptions = typeof task.rsync_options === 'string' 
           ? JSON.parse(task.rsync_options) 
           : task.rsync_options;
         
@@ -66,6 +67,7 @@ class OpenListSync {
       // 执行同步
       const result = await this.webdav.syncDirectory(sourcePath, remoteDir, {
         incremental: task.sync_mode !== 'full',
+        deleteFiles: rsyncOptions.delete || false,
         exclude: excludePatterns,
         onProgress: (percent, completed, total, currentFile) => {
           if (onProgress) {

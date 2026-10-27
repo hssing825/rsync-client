@@ -237,7 +237,16 @@ async function executeOpenListTask(taskId, task, startTime) {
         });
       },
       onFileComplete: (relativePath, status, errorMessage) => {
-        const statusText = status === 'skipped' ? '跳过' : status === true ? '成功' : `失败: ${errorMessage}`;
+        let statusText;
+        if (status === 'skipped') {
+          statusText = '跳过';
+        } else if (status === 'deleted') {
+          statusText = '已删除';
+        } else if (status === true) {
+          statusText = '成功';
+        } else {
+          statusText = `失败: ${errorMessage}`;
+        }
         console.log(`[Task ${taskId}] ${relativePath}: ${statusText}`);
       }
     });

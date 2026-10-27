@@ -226,6 +226,20 @@ class WebDAVSync {
     }
   }
 
+  // 删除远程文件
+  async deleteFile(remotePath) {
+    try {
+      const normalizedPath = remotePath.replace(/^\//, '');
+      const response = await this.client.delete(normalizedPath);
+      return { success: true, message: '删除成功' };
+    } catch (error) {
+      if (error.response) {
+        return { success: false, message: `删除失败: ${error.response.status} ${error.response.statusText}` };
+      }
+      throw new Error(`删除失败: ${error.message}`);
+    }
+  }
+
   // 列出本地文件
   listFiles(dir, exclude = []) {
     const results = [];
@@ -254,7 +268,7 @@ class WebDAVSync {
         } else {
           results.push({
             fullPath,
-            relativePath,
+            relativePath: relativePath.replace(/\\/g, '/'),
             size: stat.size,
             mtime: stat.mtime
           });
@@ -328,6 +342,34 @@ class WebDAVSync {
             
             remoteFilesMap.set(relativePath, { ...file, exists: true });
           });
+        }
+      }
+
+      // 构建本地文件路径集合（用于删除检查）
+      const localFilePaths = new Set(localFiles.map(f => f.relativePath.replace(/\\/g, '/')));
+
+      console.log(`[WebDAV] deleteFiles=${deleteFiles}, incremental=${incremental}, remoteFilesMap.size=${remoteFilesMap.size}, localFilePaths.size=${localFilePaths.size}`);
+
+      // 删除目标文件中不存在于源文件的文件
+      if (deleteFiles && incremental) {
+        let deletedFiles = 0;
+        for (const [remoteRelativePath, remoteFile] of remoteFilesMap) {
+          if (!localFilePaths.has(remoteRelativePath)) {
+            console.log(`[WebDAV] Deleting remote file: ${remoteRelativePath}`);
+            try {
+              const fullRemotePath = path.join(remoteDir, remoteRelativePath).replace(/\\/g, '/');
+              await this.deleteFile(fullRemotePath);
+              deletedFiles++;
+              if (onFileComplete) {
+                onFileComplete(remoteRelativePath, 'deleted');
+              }
+            } catch (error) {
+              console.error(`[WebDAV] Failed to delete ${remoteRelativePath}: ${error.message}`);
+            }
+          }
+        }
+        if (deletedFiles > 0) {
+          console.log(`[WebDAV] Deleted ${deletedFiles} remote files that no longer exist locally`);
         }
       }
 
