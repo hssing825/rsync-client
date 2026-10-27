@@ -178,11 +178,16 @@ class WebDAVSync {
   }
 
   // 上传文件（带重试）
-  async uploadFile(localFilePath, remotePath, onProgress = null) {
+  async uploadFile(localFilePath, remotePath, onProgress = null, onCancel = null) {
     let retries = 0;
     
     while (retries <= this.maxRetries) {
       try {
+        // 检查是否已取消
+        if (onCancel && onCancel()) {
+          throw new Error('Task cancelled');
+        }
+
         // 确保父目录存在
         const parentPath = path.dirname(remotePath).replace(/\\/g, '/');
         if (parentPath !== '.' && parentPath !== '/') {
@@ -199,6 +204,11 @@ class WebDAVSync {
             'Content-Length': fileSize
           },
           onUploadProgress: (progressEvent) => {
+            // 检查是否已取消
+            if (onCancel && onCancel()) {
+              fileStream.destroy();
+              throw new Error('Task cancelled');
+            }
             if (onProgress) {
               const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
               onProgress(percent, progressEvent.loaded, progressEvent.total);
@@ -302,6 +312,7 @@ class WebDAVSync {
       exclude = [],
       onProgress = null,
       onFileComplete = null,
+      onCancel = null,
       incremental = true
     } = options;
 
@@ -354,6 +365,9 @@ class WebDAVSync {
       if (deleteFiles && incremental) {
         let deletedFiles = 0;
         for (const [remoteRelativePath, remoteFile] of remoteFilesMap) {
+          if (onCancel && onCancel()) {
+            throw new Error('Task cancelled');
+          }
           if (!localFilePaths.has(remoteRelativePath)) {
             console.log(`[WebDAV] Deleting remote file: ${remoteRelativePath}`);
             try {
@@ -364,6 +378,7 @@ class WebDAVSync {
                 onFileComplete(remoteRelativePath, 'deleted');
               }
             } catch (error) {
+              if (error.message === 'Task cancelled') throw error;
               console.error(`[WebDAV] Failed to delete ${remoteRelativePath}: ${error.message}`);
             }
           }
@@ -374,6 +389,11 @@ class WebDAVSync {
       }
 
       for (const localFile of localFiles) {
+        // 检查是否已取消
+        if (onCancel && onCancel()) {
+          throw new Error('Task cancelled');
+        }
+
         const remotePath = path.join(remoteDir, localFile.relativePath).replace(/\\/g, '/');
         // 统一使用正斜杠进行匹配
         const normalizedLocalPath = localFile.relativePath.replace(/\\/g, '/');
@@ -393,7 +413,7 @@ class WebDAVSync {
           continue;
         }
 
-        const result = await this.uploadFile(localFile.fullPath, remotePath);
+        const result = await this.uploadFile(localFile.fullPath, remotePath, null, onCancel);
 
         if (result.success) {
           uploadedFiles++;

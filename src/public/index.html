@@ -101,9 +101,9 @@
                 <el-table-column prop="source_path" label="源路径" min-width="120" show-overflow-tooltip></el-table-column>
                 <el-table-column prop="target_path" label="目标路径" min-width="120" show-overflow-tooltip></el-table-column>
                 <el-table-column prop="cron_expression" label="定时" width="100"></el-table-column>
-                <el-table-column label="状态" width="80">
+                <el-table-column label="状态" width="100">
                   <template #default="scope">
-                    <span :class="['status-badge', 'status-' + scope.row.status]">{{ scope.row.status }}</span>
+                    <span :class="['status-badge', 'status-' + scope.row.status]" style="white-space: nowrap;">{{ scope.row.status }}</span>
                   </template>
                 </el-table-column>
                 <el-table-column label="进度" width="180">

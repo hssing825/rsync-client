@@ -69,6 +69,7 @@ class OpenListSync {
         incremental: task.sync_mode !== 'full',
         deleteFiles: rsyncOptions.delete || false,
         exclude: excludePatterns,
+        onCancel: options.onCancel,
         onProgress: (percent, completed, total, currentFile) => {
           if (onProgress) {
             onProgress(percent, completed, total, currentFile);

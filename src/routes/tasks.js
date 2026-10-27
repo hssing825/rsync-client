@@ -206,6 +206,9 @@ async function executeOpenListTask(taskId, task, startTime) {
 
   // 累积进度消息
   let progressMessages = [];
+  // 取消标志
+  let isCancelled = false;
+  runningTasks[taskId] = { cancel: () => { isCancelled = true; } };
 
   try {
     // 获取服务器配置
@@ -226,7 +229,9 @@ async function executeOpenListTask(taskId, task, startTime) {
 
     // 执行同步
     const result = await openlistSync.sync(task, {
+      onCancel: () => isCancelled,
       onProgress: (percent, completed, total, currentFile) => {
+        if (isCancelled) return;
         const progressMsg = `进度: ${percent}% (${completed}/${total}) - ${currentFile}`;
         console.log(`[Task ${taskId}] ${progressMsg}`);
         progressMessages.push(progressMsg);
@@ -237,6 +242,7 @@ async function executeOpenListTask(taskId, task, startTime) {
         });
       },
       onFileComplete: (relativePath, status, errorMessage) => {
+        if (isCancelled) return;
         let statusText;
         if (status === 'skipped') {
           statusText = '跳过';
@@ -250,6 +256,18 @@ async function executeOpenListTask(taskId, task, startTime) {
         console.log(`[Task ${taskId}] ${relativePath}: ${statusText}`);
       }
     });
+
+    if (isCancelled) {
+      console.log(`\n[Task ${taskId}] OpenList sync cancelled`);
+      db.updateLog(logEntry.lastID, {
+        status: 'stopped',
+        message: progressMessages.join('\n') + '\n\n=== Task Manually Stopped ===',
+        finished_at: new Date().toISOString()
+      });
+      db.updateTask(taskId, { status: 'stopped' });
+      delete runningTasks[taskId];
+      return;
+    }
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
     const status = result.success ? 'success' : 'failed';
@@ -285,6 +303,18 @@ async function executeOpenListTask(taskId, task, startTime) {
     db.updateTask(taskId, { status: status === 'success' ? 'idle' : 'error' });
 
   } catch (error) {
+    if (isCancelled) {
+      console.log(`\n[Task ${taskId}] OpenList sync cancelled`);
+      db.updateLog(logEntry.lastID, {
+        status: 'stopped',
+        message: progressMessages.join('\n') + '\n\n=== Task Manually Stopped ===',
+        finished_at: new Date().toISOString()
+      });
+      db.updateTask(taskId, { status: 'stopped' });
+      delete runningTasks[taskId];
+      return;
+    }
+    
     console.error(`\n[Task ${taskId}] OpenList sync error: ${error.message}`);
     
     const fullLog = [
@@ -678,7 +708,13 @@ router.post('/:id/stop', (req, res) => {
     if (runningTasks[req.params.id]) {
       const proc = runningTasks[req.params.id];
       try {
-        proc.kill('SIGKILL');
+        // OpenList 任务使用 cancel 函数
+        if (typeof proc.cancel === 'function') {
+          proc.cancel();
+        } else {
+          // rsync 进程直接 kill
+          proc.kill('SIGKILL');
+        }
       } catch (e) {
         // 进程可能已经退出
       }
