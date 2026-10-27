@@ -12,7 +12,7 @@ COPY src/ ./src/
 
 RUN mkdir -p /app/data /app/webdav-storage /app/logs
 
-EXPOSE 3000
+EXPOSE 3002
 
 VOLUME ["/app/data", "/app/webdav-storage", "/app/logs"]
 
