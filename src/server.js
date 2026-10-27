@@ -61,7 +61,7 @@ app.get('/api/logs/:date', (req, res) => {
 
 app.delete('/api/logs/:date', (req, res) => {
   try {
-    const logDir = path.join(__dirname, '..', 'logs');
+    const logDir = path.join(__dirname, '..', 'data', 'logs');
     const logFile = path.join(logDir, `task-${req.params.date}.log`);
     if (fs.existsSync(logFile)) {
       fs.unlinkSync(logFile);
