@@ -139,16 +139,21 @@ class WebDAVSync {
         const xml = response.data;
         const files = [];
         
-        // 解析 XML 响应
-        const responseRegex = /<response>([\s\S]*?)<\/response>/g;
+        // 解析 XML 响应 - 支持命名空间前缀（如 d:response, d:href）
+        const responseRegex = /<[\w:]*response[\s>][\s\S]*?<\/[\w:]*response>/g;
         let match;
         
         while ((match = responseRegex.exec(xml)) !== null) {
-          const responseXml = match[1];
-          const hrefMatch = responseXml.match(/<href>([^<]+)<\/href>/);
-          const sizeMatch = responseXml.match(/<getcontentlength>(\d+)<\/getcontentlength>/);
-          const dateMatch = responseXml.match(/<getlastmodified>([^<]+)<\/getlastmodified>/);
-          const typeMatch = responseXml.match(/<resourcetype>([\s\S]*?)<\/resourcetype>/);
+          const responseXml = match[0];
+          
+          // 支持命名空间前缀的 href
+          const hrefMatch = responseXml.match(/<[\w:]*href[^>]*>([^<]+)<\/[\w:]*href>/);
+          // 支持命名空间前缀的 getcontentlength
+          const sizeMatch = responseXml.match(/<[\w:]*getcontentlength[^>]*>(\d+)<\/[\w:]*getcontentlength>/);
+          // 支持命名空间前缀的 getlastmodified
+          const dateMatch = responseXml.match(/<[\w:]*getlastmodified[^>]*>([^<]+)<\/[\w:]*getlastmodified>/);
+          // 支持命名空间前缀的 resourcetype
+          const typeMatch = responseXml.match(/<[\w:]*resourcetype[^>]*>([\s\S]*?)<\/[\w:]*resourcetype>/);
 
           if (hrefMatch) {
             const href = decodeURIComponent(hrefMatch[1]);
@@ -267,20 +272,13 @@ class WebDAVSync {
       return true; // 远程文件不存在，需要同步
     }
 
-    // 比较文件大小
+    // 只比较文件大小
+    // 注意：WebDAV 返回的 lastModified 通常是上传时间而非文件原始修改时间，不可靠
     if (localFile.size !== remoteFile.size) {
       return true; // 大小不同，需要同步
     }
 
-    // 比较修改时间（允许1秒误差）
-    if (remoteFile.lastModified) {
-      const timeDiff = Math.abs(localFile.mtime.getTime() - remoteFile.lastModified.getTime());
-      if (timeDiff > 1000) {
-        return true; // 修改时间不同，需要同步
-      }
-    }
-
-    return false; // 文件相同，不需要同步
+    return false; // 文件大小相同，认为是同一个文件
   }
 
   // 增量同步目录
@@ -310,8 +308,22 @@ class WebDAVSync {
         if (remoteListResult.success) {
           remoteListResult.files.forEach(file => {
             // 提取相对路径
-            const relativePath = file.path.replace(remoteDir, '').replace(/^\//, '');
-            remoteFilesMap.set(relativePath, file);
+            let relativePath = file.path;
+            relativePath = decodeURIComponent(relativePath).replace(/^\//, '');
+            
+            // 移除 WebDAV 根路径前缀（如 /dav/）
+            const davPrefix = relativePath.split('/')[0];
+            if (davPrefix && relativePath.startsWith(davPrefix + '/')) {
+              relativePath = relativePath.substring(davPrefix.length + 1);
+            }
+            
+            // 移除 remoteDir 前缀
+            const normalizedRemoteDir = remoteDir.replace(/^\//, '');
+            if (relativePath.startsWith(normalizedRemoteDir)) {
+              relativePath = relativePath.substring(normalizedRemoteDir.length).replace(/^\//, '');
+            }
+            
+            remoteFilesMap.set(relativePath, { ...file, exists: true });
           });
         }
       }
