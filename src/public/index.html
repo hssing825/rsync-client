@@ -425,7 +425,11 @@
           <div style="margin-top: 5px; font-size: 12px; color: #606266;">{{ runningLog.progressText }}</div>
         </div>
         <el-table :data="logs" stripe max-height="400">
-          <el-table-column prop="id" label="ID" width="60"></el-table-column>
+          <el-table-column prop="task_name" label="任务名称" min-width="120">
+            <template #default="scope">
+              {{ scope.row.task_name || `任务 ${scope.row.task_id}` }}
+            </template>
+          </el-table-column>
           <el-table-column prop="status" label="状态" width="100">
             <template #default="scope">
               <span :class="['status-badge', 'status-' + scope.row.status]">{{ scope.row.status }}</span>
@@ -1079,9 +1083,10 @@
               currentLogFileContent.value = res.data.data.map(log => {
                 const time = log.started_at ? new Date(log.started_at).toLocaleString('zh-CN') : '未知时间';
                 const status = log.status || 'unknown';
+                const taskName = log.task_name || `任务 ${log.task_id}`;
                 const message = log.message || '';
                 const finished = log.finished_at ? ` | 结束: ${new Date(log.finished_at).toLocaleString('zh-CN')}` : '';
-                return `[${time}] [${status}] Task ${log.task_id}${finished}\n${message}\n${'='.repeat(80)}\n`;
+                return `[${time}] [${status}] ${taskName}${finished}\n${message}\n${'='.repeat(80)}\n`;
               }).join('\n');
               logFileDetailVisible.value = true;
             } else {

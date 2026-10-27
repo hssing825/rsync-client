@@ -8,67 +8,87 @@ if (!fs.existsSync(logDir)) {
 
 class TaskLogger {
   constructor() {
-    this.currentDate = this.getDateString();
-    this.currentLogFile = this.getLogFilePath(this.currentDate);
-    this.logs = new Map(); // 内存中缓存日志记录
+    // 内存中缓存日志记录：logId -> logEntry
+    // 任务运行时，日志只存在内存中，完成后才写入文件
+    this.logs = new Map();
+    // 缓存任务名称：taskId -> taskName
+    this.taskNames = new Map();
+  }
+
+  // 设置任务名称缓存
+  setTaskName(taskId, taskName) {
+    this.taskNames.set(String(taskId), taskName);
+  }
+
+  getTaskName(taskId) {
+    return this.taskNames.get(String(taskId)) || `任务 ${taskId}`;
   }
 
   getDateString(date = new Date()) {
-    return date.toISOString().split('T')[0]; // YYYY-MM-DD
+    return date.toISOString().split('T')[0];
   }
 
   getLogFilePath(dateStr) {
     return path.join(logDir, `task-${dateStr}.log`);
   }
 
-  // 生成唯一日志 ID
   generateLogId() {
     return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
   }
 
-  // 添加日志记录
+  // 添加日志记录（任务开始时调用）
   addLog(data) {
     const logId = this.generateLogId();
     const logEntry = {
       id: logId,
       task_id: data.task_id,
+      task_name: data.task_name || this.getTaskName(data.task_id),
       status: data.status || 'running',
       message: data.message || '',
       started_at: new Date().toISOString(),
       finished_at: null
     };
 
+    // 只存在内存中，不写入文件
     this.logs.set(logId, logEntry);
-    this.writeLogToFile(logEntry);
 
     return { lastID: logId };
   }
 
-  // 写入日志到文件
+  // 更新日志记录（任务运行时频繁调用，只更新内存）
+  updateLog(logId, data) {
+    const logEntry = this.logs.get(logId);
+    if (!logEntry) {
+      console.error(`[Logger] Log entry not found: ${logId}`);
+      return;
+    }
+
+    // 只更新内存中的记录，不写入文件
+    Object.assign(logEntry, data);
+    if (data.finished_at) {
+      logEntry.finished_at = data.finished_at;
+    }
+
+    // 只有任务完成时才写入文件
+    if (data.finished_at || data.status === 'success' || data.status === 'failed' || data.status === 'error') {
+      this.writeLogToFile(logEntry);
+      // 写入后从内存中移除
+      this.logs.delete(logId);
+    }
+  }
+
+  // 写入日志到文件（只在任务完成时调用）
   writeLogToFile(logEntry) {
     const dateStr = this.getDateString(new Date(logEntry.started_at));
     const logFile = this.getLogFilePath(dateStr);
 
+    // 确保目录存在
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+
     const logLine = JSON.stringify(logEntry) + '\n';
     fs.appendFileSync(logFile, logLine, 'utf8');
-  }
-
-  // 更新日志记录
-  updateLog(logId, data) {
-    const logEntry = this.logs.get(logId);
-    if (!logEntry) {
-      // 如果内存中没有，尝试从文件加载
-      this.loadLogFromFile(logId);
-    }
-
-    const entry = this.logs.get(logId);
-    if (entry) {
-      Object.assign(entry, data);
-      if (data.finished_at) {
-        entry.finished_at = data.finished_at;
-      }
-      this.writeLogToFile(entry);
-    }
   }
 
   // 从文件加载日志
@@ -113,6 +133,15 @@ class TaskLogger {
     const logs = [];
     const files = this.getLogFiles();
 
+    // 先从内存中查找运行中的日志
+    for (const [logId, logEntry] of this.logs) {
+      if (String(logEntry.task_id) === String(taskId)) {
+        logs.push(logEntry);
+        if (logs.length >= limit) return logs;
+      }
+    }
+
+    // 再从文件中查找历史日志
     for (const file of files) {
       if (logs.length >= limit) break;
 
@@ -153,6 +182,14 @@ class TaskLogger {
 
   // 删除任务的所有日志
   deleteTaskLogs(taskId) {
+    // 清理内存
+    for (const [key, value] of this.logs) {
+      if (String(value.task_id) === String(taskId)) {
+        this.logs.delete(key);
+      }
+    }
+
+    // 清理文件
     const files = this.getLogFiles();
     for (const file of files) {
       try {
@@ -163,7 +200,7 @@ class TaskLogger {
             const entry = JSON.parse(line);
             return String(entry.task_id) !== String(taskId);
           } catch (e) {
-            return true; // 保留无效行
+            return true;
           }
         });
 
@@ -171,14 +208,7 @@ class TaskLogger {
           fs.writeFileSync(file, filteredLines.join('\n') + '\n', 'utf8');
         }
       } catch (e) {
-        // 跳过无法处理的文件
-      }
-    }
-
-    // 清理内存
-    for (const [key, value] of this.logs) {
-      if (String(value.task_id) === String(taskId)) {
-        this.logs.delete(key);
+        // 跳过
       }
     }
   }
@@ -227,11 +257,38 @@ class TaskLogger {
       const dateMatch = fileName.match(/task-(\d{4}-\d{2}-\d{2})\.log/);
       const stats = fs.statSync(file);
       
+      // 读取文件内容，获取任务名称
+      let taskNames = [];
+      try {
+        const content = fs.readFileSync(file, 'utf8');
+        const lines = content.trim().split('\n');
+        const taskIds = new Set();
+        
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            taskIds.add(entry.task_id);
+            if (entry.task_name) {
+              this.taskNames.set(String(entry.task_id), entry.task_name);
+            }
+          } catch (e) {
+            // 跳过
+          }
+        }
+        
+        for (const taskId of taskIds) {
+          taskNames.push(this.getTaskName(taskId));
+        }
+      } catch (e) {
+        // 忽略
+      }
+      
       return {
         filename: fileName,
         date: dateMatch ? dateMatch[1] : 'unknown',
         size: stats.size,
-        created: stats.birthtime
+        created: stats.birthtime,
+        task_names: taskNames
       };
     });
   }
@@ -252,6 +309,9 @@ class TaskLogger {
       for (const line of lines) {
         try {
           const entry = JSON.parse(line);
+          if (entry.task_name) {
+            this.taskNames.set(String(entry.task_id), entry.task_name);
+          }
           logs.push(entry);
         } catch (e) {
           // 跳过无效行

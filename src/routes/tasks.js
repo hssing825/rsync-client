@@ -77,6 +77,7 @@ async function executeTask(taskId) {
 
   const logEntry = db.addLog({
     task_id: taskId,
+    task_name: task.name,
     status: 'running',
     message: 'Task started'
   });
@@ -196,11 +197,15 @@ async function executeOpenListTask(taskId, task, startTime) {
 
   const logEntry = db.addLog({
     task_id: taskId,
+    task_name: task.name,
     status: 'running',
     message: 'OpenList 同步开始'
   });
 
   db.updateTask(taskId, { status: 'running', last_run_at: new Date().toISOString() });
+
+  // 累积进度消息
+  let progressMessages = [];
 
   try {
     // 获取服务器配置
@@ -224,9 +229,11 @@ async function executeOpenListTask(taskId, task, startTime) {
       onProgress: (percent, completed, total, currentFile) => {
         const progressMsg = `进度: ${percent}% (${completed}/${total}) - ${currentFile}`;
         console.log(`[Task ${taskId}] ${progressMsg}`);
+        progressMessages.push(progressMsg);
+        // 只更新内存中的进度，不写文件
         db.updateLog(logEntry.lastID, {
           status: 'running',
-          message: progressMsg
+          message: progressMessages.join('\n')
         });
       },
       onFileComplete: (relativePath, status, errorMessage) => {
@@ -244,6 +251,9 @@ async function executeOpenListTask(taskId, task, startTime) {
       `任务: ${task.name}`,
       `源路径: ${task.source_path}`,
       `目标: ${server.webdav_url}${task.target_path}`,
+      ``,
+      `进度记录:`,
+      ...progressMessages,
       ``,
       `统计:`,
       `- 上传文件: ${result.uploadedFiles || 0}`,
@@ -272,6 +282,9 @@ async function executeOpenListTask(taskId, task, startTime) {
       `=== OpenList 同步失败 ===`,
       `任务: ${task.name}`,
       `错误: ${error.message}`,
+      ``,
+      `进度记录:`,
+      ...progressMessages,
       ``,
       `=== 故障排查 ===`,
       `1. 检查 OpenList 服务是否运行`,
