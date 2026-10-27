@@ -323,6 +323,9 @@ class WebDAVSync {
               relativePath = relativePath.substring(normalizedRemoteDir.length).replace(/^\//, '');
             }
             
+            // 统一使用正斜杠，确保与本地路径匹配
+            relativePath = relativePath.replace(/\\/g, '/');
+            
             remoteFilesMap.set(relativePath, { ...file, exists: true });
           });
         }
@@ -330,7 +333,9 @@ class WebDAVSync {
 
       for (const localFile of localFiles) {
         const remotePath = path.join(remoteDir, localFile.relativePath).replace(/\\/g, '/');
-        const remoteFile = remoteFilesMap.get(localFile.relativePath);
+        // 统一使用正斜杠进行匹配
+        const normalizedLocalPath = localFile.relativePath.replace(/\\/g, '/');
+        const remoteFile = remoteFilesMap.get(normalizedLocalPath);
 
         if (onProgress) {
           const percent = Math.round(((uploadedFiles + skippedFiles) / totalFiles) * 100);
