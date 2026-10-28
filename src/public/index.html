@@ -312,7 +312,7 @@
           </el-form-item>
           <el-form-item v-if="taskForm.sync_type === 'remote' || taskForm.sync_type === 'openlist'" label="服务器" required>
             <el-select v-model="taskForm.server_id" placeholder="选择服务器" style="width: 100%;">
-              <el-option v-for="server in servers.filter(s => s.server_type === taskForm.sync_type)" :key="server.id" :label="server.name" :value="server.id"></el-option>
+              <el-option v-for="server in servers.filter(s => (s.server_type || 'rsync') === (taskForm.sync_type === 'remote' ? 'rsync' : taskForm.sync_type))" :key="server.id" :label="server.name" :value="server.id"></el-option>
             </el-select>
           </el-form-item>
           <el-form-item v-if="taskForm.sync_type === 'remote'" label="模块">
@@ -621,7 +621,10 @@
         const loadServers = async () => {
           try {
             const res = await axios.get('/api/servers');
-            servers.value = res.data.data;
+            servers.value = (res.data.data || []).map(s => ({
+              ...s,
+              server_type: s.server_type || 'rsync'
+            }));
           } catch (err) {
             ElementPlus.ElMessage.error('加载服务器失败');
           }
