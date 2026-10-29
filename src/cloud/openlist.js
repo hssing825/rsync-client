@@ -24,7 +24,8 @@ class OpenListSync {
     const {
       direction = 'push',
       onProgress = null,
-      onFileComplete = null
+      onFileComplete = null,
+      onCancel = null
     } = options;
 
     const startTime = Date.now();
@@ -73,17 +74,22 @@ class OpenListSync {
         }
       }
 
+      // 加密模式：仅 OpenList 支持，采用流式加解密直传，不占用额外本地磁盘空间
+      const encryptEnabled = task.sync_type === 'openlist'
+        && Number(task.encryption_enabled) === 1
+        && !!task.encryption_password;
+
+      const reportProgress = (percent, completed, total, currentFile) => {
+        if (onProgress) onProgress(percent, completed, total, currentFile);
+        console.log(`[OpenList Sync] Progress: ${percent}% (${completed}/${total}) - ${currentFile}`);
+      };
+
       const commonOptions = {
         incremental: task.sync_mode !== 'full',
         deleteFiles: rsyncOptions.delete || false,
         exclude: excludePatterns,
-        onCancel: options.onCancel,
-        onProgress: (percent, completed, total, currentFile) => {
-          if (onProgress) {
-            onProgress(percent, completed, total, currentFile);
-          }
-          console.log(`[OpenList Sync] Progress: ${percent}% (${completed}/${total}) - ${currentFile}`);
-        },
+        onCancel,
+        onProgress: reportProgress,
         onFileComplete: (relativePath, status, errorMessage) => {
           if (onFileComplete) {
             onFileComplete(relativePath, status, errorMessage);
@@ -91,13 +97,32 @@ class OpenListSync {
         }
       };
 
-      // 根据方向执行推送或拉取
-      const result = isPull
-        ? await this.webdav.pullDirectory(remoteDir, sourcePath, commonOptions)
-        : await this.webdav.syncDirectory(sourcePath, remoteDir, commonOptions);
+      let result;
+      if (encryptEnabled) {
+        result = isPull
+          ? await this.webdav.pullDirectoryEncrypted(
+              remoteDir,
+              sourcePath,
+              task.encryption_password,
+              {
+                ...commonOptions,
+                deleteFiles: Number(task.encryption_delete_local) === 1
+              }
+            )
+          : await this.webdav.syncDirectoryEncrypted(
+              sourcePath,
+              remoteDir,
+              task.encryption_password,
+              commonOptions
+            );
+      } else {
+        result = isPull
+          ? await this.webdav.pullDirectory(remoteDir, sourcePath, commonOptions)
+          : await this.webdav.syncDirectory(sourcePath, remoteDir, commonOptions);
+      }
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-      
+
       return {
         success: result.success,
         message: `${result.message} | 耗时: ${duration}s`,

@@ -75,6 +75,7 @@ async function executeTask(taskId, direction = 'push') {
   // 根据方向确定 rsync 的源和目标
   // 推送：本地 -> 目标；拉取：目标 -> 本地
   const remotePath = buildTargetPath(task);
+
   const sourcePath = isPull ? remotePath : localPath;
   const targetPath = isPull ? localPath : remotePath;
 
@@ -140,9 +141,9 @@ async function executeTask(taskId, direction = 'push') {
     }
   }
 
-  child.on('close', (code) => {
+  child.on('close', async (code) => {
     delete runningTasks[taskId];
-    
+
     const status = code === 0 ? 'success' : 'failed';
     const result = code === 0 ? '成功' : `失败 (退出码 ${code})`;
     const summary = `任务${result}（${directionText}）| 耗时: ${((Date.now() - startTime) / 1000).toFixed(1)}s`;
@@ -556,10 +557,21 @@ function buildTargetPath(task) {
   }
 }
 
+// 对外返回任务时隐藏加密密码明文，仅暴露是否已设置
+function sanitizeTask(task) {
+  if (!task) return task;
+  const { encryption_password, ...rest } = task;
+  return {
+    ...rest,
+    encryption_password_set: !!encryption_password,
+    encryption_password: ''
+  };
+}
+
 router.get('/', (req, res) => {
   try {
     const tasks = db.getTasks();
-    res.json({ success: true, data: tasks });
+    res.json({ success: true, data: tasks.map(sanitizeTask) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -571,7 +583,7 @@ router.get('/:id', (req, res) => {
     if (!task) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
-    res.json({ success: true, data: task });
+    res.json({ success: true, data: sanitizeTask(task) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -579,7 +591,7 @@ router.get('/:id', (req, res) => {
 
 router.post('/', (req, res) => {
   try {
-    const { name, sync_type, server_id, module, source_path, target_path, cron_expression, auto_snapshot, rsync_options, sync_mode } = req.body;
+    const { name, sync_type, server_id, module, source_path, target_path, cron_expression, auto_snapshot, rsync_options, sync_mode, encryption_enabled, encryption_password, encryption_delete_local } = req.body;
     
     if (!name || !source_path || !target_path) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
@@ -588,6 +600,16 @@ router.post('/', (req, res) => {
     // 远程同步和 OpenList 同步必须指定服务器，本地同步不需要
     if ((sync_type === 'remote' || sync_type === 'openlist') && !server_id) {
       return res.status(400).json({ success: false, message: 'Remote/OpenList sync requires a server' });
+    }
+
+    // 加密备份仅支持 OpenList 同步类型
+    const isOpenList = sync_type === 'openlist';
+    const encryptEnabled = isOpenList && encryption_enabled ? 1 : 0;
+    if (encryption_enabled && !isOpenList) {
+      return res.status(400).json({ success: false, message: '仅 OpenList 同步支持加密备份' });
+    }
+    if (encryptEnabled && !encryption_password) {
+      return res.status(400).json({ success: false, message: '启用加密时必须填写加密密码' });
     }
 
     const result = db.addTask({
@@ -600,6 +622,9 @@ router.post('/', (req, res) => {
       cron_expression: cron_expression || null,
       auto_snapshot: auto_snapshot !== undefined ? (auto_snapshot ? 1 : 0) : 1,
       sync_mode: sync_mode || 'incremental',
+      encryption_enabled: encryptEnabled,
+      encryption_password: encryptEnabled ? encryption_password : null,
+      encryption_delete_local: encryptEnabled && encryption_delete_local ? 1 : 0,
       rsync_options: JSON.stringify(rsync_options || {})
     });
 
@@ -635,7 +660,28 @@ router.put('/:id', (req, res) => {
     if (req.body.auto_snapshot !== undefined) updateData.auto_snapshot = req.body.auto_snapshot ? 1 : 0;
     if (req.body.enabled !== undefined) updateData.enabled = req.body.enabled ? 1 : 0;
     if (req.body.sync_mode !== undefined) updateData.sync_mode = req.body.sync_mode;
+    if (req.body.encryption_enabled !== undefined) updateData.encryption_enabled = req.body.encryption_enabled ? 1 : 0;
+    // 密码留空表示保持原密码不变
+    if (req.body.encryption_password) updateData.encryption_password = req.body.encryption_password;
+    if (req.body.encryption_delete_local !== undefined) updateData.encryption_delete_local = req.body.encryption_delete_local ? 1 : 0;
     if (req.body.rsync_options !== undefined) updateData.rsync_options = JSON.stringify(req.body.rsync_options);
+
+    if (updateData.encryption_enabled === 1 && !updateData.encryption_password && !task.encryption_password) {
+      return res.status(400).json({ success: false, message: '启用加密时必须填写加密密码' });
+    }
+
+    // 加密备份仅支持 OpenList 同步类型
+    const finalSyncType = updateData.sync_type !== undefined ? updateData.sync_type : task.sync_type;
+    if (updateData.encryption_enabled === 1 && finalSyncType !== 'openlist') {
+      return res.status(400).json({ success: false, message: '仅 OpenList 同步支持加密备份' });
+    }
+
+    // 非 OpenList 类型不允许保留任何加密配置
+    if (finalSyncType !== 'openlist') {
+      updateData.encryption_enabled = 0;
+      updateData.encryption_password = null;
+      updateData.encryption_delete_local = 0;
+    }
 
     db.updateTask(req.params.id, updateData);
 

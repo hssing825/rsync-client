@@ -91,6 +91,12 @@
                     <span v-else>-</span>
                   </template>
                 </el-table-column>
+                <el-table-column label="加密" width="70" v-if="tasks.some(t => t.encryption_enabled === 1)">
+                  <template #default="scope">
+                    <el-tag v-if="scope.row.encryption_enabled === 1" type="warning" size="small">加密</el-tag>
+                    <span v-else>-</span>
+                  </template>
+                </el-table-column>
                 <el-table-column prop="server_name" label="服务器" min-width="100" show-overflow-tooltip></el-table-column>
                 <el-table-column label="模块" width="90" v-if="tasks.some(t => t.sync_type === 'remote')">
                   <template #default="scope">
@@ -343,6 +349,19 @@
             <el-switch v-model="taskForm.auto_snapshot" :active-value="1" :inactive-value="0"></el-switch>
             <div style="color: #909399; font-size: 12px; margin-top: 5px;">任务成功完成后自动创建 Time Machine 快照</div>
           </el-form-item>
+          <el-divider v-if="taskForm.sync_type === 'openlist'">加密备份</el-divider>
+          <el-form-item label="启用加密" v-if="taskForm.sync_type === 'openlist'">
+            <el-switch v-model="taskForm.encryption_enabled" :active-value="1" :inactive-value="0"></el-switch>
+            <div style="color: #909399; font-size: 12px; margin-top: 5px;">推送时边加密边上传，拉取时边下载边解密，不占用额外本地磁盘空间</div>
+          </el-form-item>
+          <el-form-item label="加密密码" v-if="taskForm.sync_type === 'openlist' && taskForm.encryption_enabled === 1" required>
+            <el-input v-model="taskForm.encryption_password" type="password" show-password :placeholder="taskForm.encryption_password_set ? '已设置密码，留空表示不修改' : '请设置加密密码'"></el-input>
+            <div style="color: #909399; font-size: 12px; margin-top: 5px;">密码用于 AES-256-GCM 加密，请务必妥善保管，密码丢失将无法解密</div>
+          </el-form-item>
+          <el-form-item label="拉取时删除本地多余文件" v-if="taskForm.sync_type === 'openlist' && taskForm.encryption_enabled === 1">
+            <el-switch v-model="taskForm.encryption_delete_local" :active-value="1" :inactive-value="0"></el-switch>
+            <div style="color: #909399; font-size: 12px; margin-top: 5px;">解密后删除本地存在但备份中不存在的文件</div>
+          </el-form-item>
           <el-divider>RSYNC 选项</el-divider>
           <el-form-item label="删除目标文件">
             <el-switch v-model="taskForm.rsync_options.delete"></el-switch>
@@ -570,6 +589,10 @@
           target_path: '',
           cron_expression: '',
           auto_snapshot: 1,
+          encryption_enabled: 0,
+          encryption_password: '',
+          encryption_password_set: false,
+          encryption_delete_local: 0,
           rsync_options: {
             delete: false,
             progress: true,
@@ -656,6 +679,10 @@
               target_path: task.target_path,
               cron_expression: task.cron_expression || '',
               auto_snapshot: task.auto_snapshot !== undefined ? task.auto_snapshot : 1,
+              encryption_enabled: task.encryption_enabled === 1 ? 1 : 0,
+              encryption_password: '',
+              encryption_password_set: !!task.encryption_password_set,
+              encryption_delete_local: task.encryption_delete_local === 1 ? 1 : 0,
               rsync_options: JSON.parse(task.rsync_options || '{}')
             });
           } else {
@@ -670,6 +697,10 @@
               target_path: '',
               cron_expression: '',
               auto_snapshot: 1,
+              encryption_enabled: 0,
+              encryption_password: '',
+              encryption_password_set: false,
+              encryption_delete_local: 0,
               rsync_options: {
                 delete: false,
                 progress: true,
@@ -685,12 +716,22 @@
         };
 
         const saveTask = async () => {
+          if (taskForm.sync_type === 'openlist' && taskForm.encryption_enabled === 1 && !taskForm.encryption_password && !taskForm.encryption_password_set) {
+            ElementPlus.ElMessage.error('启用加密时必须填写加密密码');
+            return;
+          }
+          const payload = { ...taskForm };
+          if (payload.sync_type !== 'openlist') {
+            payload.encryption_enabled = 0;
+            payload.encryption_password = '';
+            payload.encryption_delete_local = 0;
+          }
           try {
             if (editingTask.value) {
-              await axios.put(`/api/tasks/${editingTask.value.id}`, taskForm);
+              await axios.put(`/api/tasks/${editingTask.value.id}`, payload);
               ElementPlus.ElMessage.success('任务已更新');
             } else {
-              await axios.post('/api/tasks', taskForm);
+              await axios.post('/api/tasks', payload);
               ElementPlus.ElMessage.success('任务已创建');
             }
             taskDialogVisible.value = false;
