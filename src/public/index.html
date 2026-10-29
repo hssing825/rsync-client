@@ -126,7 +126,8 @@
                       <el-button size="small">操作<i class="el-icon-arrow-down el-icon--right"></i></el-button>
                       <template #dropdown>
                         <el-dropdown-menu>
-                          <el-dropdown-item @click="runTask(scope.row.id)" :disabled="scope.row.status === 'running'">运行</el-dropdown-item>
+                          <el-dropdown-item @click="runTask(scope.row.id)" :disabled="scope.row.status === 'running'">推送</el-dropdown-item>
+                          <el-dropdown-item @click="pullTask(scope.row)" :disabled="scope.row.status === 'running'">拉取</el-dropdown-item>
                           <el-dropdown-item @click="stopTask(scope.row.id)" :disabled="scope.row.status !== 'running'">停止</el-dropdown-item>
                           <el-dropdown-item @click="createSnapshot(scope.row.id)" :disabled="scope.row.sync_type !== 'local'">创建快照</el-dropdown-item>
                           <el-dropdown-item @click="showTaskDialog(scope.row)">编辑</el-dropdown-item>
@@ -721,6 +722,30 @@
             startGlobalRefresh();
           } catch (err) {
             ElementPlus.ElMessage.error('启动任务失败');
+          }
+        };
+
+        const pullTask = async (task) => {
+          try {
+            await ElementPlus.ElMessageBox.confirm(
+              `确定要从目标拉取内容覆盖本地路径「${task.source_path}」吗？此操作会修改本地文件。`,
+              '确认拉取',
+              {
+                confirmButtonText: '确定拉取',
+                cancelButtonText: '取消',
+                type: 'warning'
+              }
+            );
+          } catch (e) {
+            return;
+          }
+          try {
+            await axios.post(`/api/tasks/${task.id}/pull`);
+            ElementPlus.ElMessage.success('拉取任务已启动');
+            await loadTasks();
+            startGlobalRefresh();
+          } catch (err) {
+            ElementPlus.ElMessage.error('启动拉取任务失败');
           }
         };
 
@@ -1424,6 +1449,7 @@
           saveTask,
           deleteTask,
           runTask,
+          pullTask,
           stopTask,
           toggleTask,
           createSnapshot,

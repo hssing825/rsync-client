@@ -22,11 +22,13 @@ class OpenListSync {
   // 同步到 OpenList
   async sync(task, options = {}) {
     const {
+      direction = 'push',
       onProgress = null,
       onFileComplete = null
     } = options;
 
     const startTime = Date.now();
+    const isPull = direction === 'pull';
     let sourcePath = task.source_path;
     
     // 解析源路径：支持相对路径和绝对路径
@@ -35,19 +37,26 @@ class OpenListSync {
       sourcePath = path.join(PROJECT_ROOT, sourcePath);
     }
 
-    // 验证源路径存在
-    if (!fs.existsSync(sourcePath)) {
+    // 推送时验证源路径存在；拉取时本地路径是目标，允许自动创建
+    if (!isPull) {
+      if (!fs.existsSync(sourcePath)) {
+        return {
+          success: false,
+          message: `源路径不存在: ${sourcePath}`
+        };
+      }
+    } else if (fs.existsSync(sourcePath) && !fs.statSync(sourcePath).isDirectory()) {
       return {
         success: false,
-        message: `源路径不存在: ${sourcePath}`
+        message: `本地目标路径不是目录: ${sourcePath}`
       };
     }
 
     // remoteBasePath 已经是目标路径，不需要再次拼接 task.target_path
     const remoteDir = this.remoteBasePath.replace(/\\/g, '/');
 
-    console.log(`\n[OpenList Sync] Starting sync: ${task.name}`);
-    console.log(`[OpenList Sync] Source: ${sourcePath}`);
+    console.log(`\n[OpenList Sync] Starting sync (${isPull ? '拉取' : '推送'}): ${task.name}`);
+    console.log(`[OpenList Sync] Local: ${sourcePath}`);
     console.log(`[OpenList Sync] Remote: ${remoteDir}`);
 
     try {
@@ -64,8 +73,7 @@ class OpenListSync {
         }
       }
 
-      // 执行同步
-      const result = await this.webdav.syncDirectory(sourcePath, remoteDir, {
+      const commonOptions = {
         incremental: task.sync_mode !== 'full',
         deleteFiles: rsyncOptions.delete || false,
         exclude: excludePatterns,
@@ -81,7 +89,12 @@ class OpenListSync {
             onFileComplete(relativePath, status, errorMessage);
           }
         }
-      });
+      };
+
+      // 根据方向执行推送或拉取
+      const result = isPull
+        ? await this.webdav.pullDirectory(remoteDir, sourcePath, commonOptions)
+        : await this.webdav.syncDirectory(sourcePath, remoteDir, commonOptions);
 
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
       

@@ -156,7 +156,8 @@ class WebDAVSync {
           const typeMatch = responseXml.match(/<[\w:]*resourcetype[^>]*>([\s\S]*?)<\/[\w:]*resourcetype>/);
 
           if (hrefMatch) {
-            const href = decodeURIComponent(hrefMatch[1]);
+            // 保留原始编码，交由 getRemoteRelativePath 统一解码，避免二次解码
+            const href = hrefMatch[1];
             const isCollection = typeMatch && typeMatch[1].includes('<collection/>');
             
             if (!isCollection && sizeMatch) {
@@ -290,6 +291,61 @@ class WebDAVSync {
     return results;
   }
 
+  // 计算远程文件相对于同步根目录的路径
+  // 兼容 WebDAV 地址带多段路径的情况（如 http://host:5244/op/dav）
+  getRemoteRelativePath(href, remoteDir) {
+    let relativePath = String(href || '').replace(/\\/g, '/');
+    try {
+      relativePath = decodeURIComponent(relativePath);
+    } catch (e) {
+      // 已经是解码后的路径，忽略重复解码错误
+    }
+
+    // href 可能是完整 URL，先取出路径部分
+    if (/^https?:\/\//i.test(relativePath)) {
+      try {
+        relativePath = new URL(relativePath).pathname;
+      } catch (e) {
+        relativePath = relativePath.replace(/^https?:\/\/[^/]+/i, '');
+      }
+    }
+
+    // 去掉 WebDAV 基础路径前缀
+    let basePath = '';
+    try {
+      basePath = new URL(this.webdavUrl).pathname.replace(/\/+$/, '');
+    } catch (e) {
+      basePath = '';
+    }
+    if (basePath && basePath !== '/') {
+      if (relativePath.startsWith(basePath + '/')) {
+        relativePath = relativePath.substring(basePath.length + 1);
+      } else if (relativePath === basePath) {
+        return '';
+      }
+    }
+
+    relativePath = relativePath.replace(/^\/+/, '');
+
+    // 去掉同步根目录前缀
+    const normalizedRemoteDir = (remoteDir || '').replace(/^\/+/, '').replace(/\/+$/, '');
+    if (normalizedRemoteDir) {
+      if (relativePath.startsWith(normalizedRemoteDir + '/')) {
+        relativePath = relativePath.substring(normalizedRemoteDir.length + 1);
+      } else if (relativePath === normalizedRemoteDir) {
+        return '';
+      } else {
+        // 兜底：在路径中查找同步根目录位置
+        const index = relativePath.indexOf(normalizedRemoteDir + '/');
+        if (index > 0) {
+          relativePath = relativePath.substring(index + normalizedRemoteDir.length + 1);
+        }
+      }
+    }
+
+    return relativePath.replace(/^\/+/, '');
+  }
+
   // 检查文件是否需要同步
   needsSync(localFile, remoteFile) {
     if (!remoteFile || !remoteFile.exists) {
@@ -303,6 +359,199 @@ class WebDAVSync {
     }
 
     return false; // 文件大小相同，认为是同一个文件
+  }
+
+  // 下载远程文件到本地
+  async downloadFile(remotePath, localFilePath, onProgress = null, onCancel = null) {
+    let retries = 0;
+
+    while (retries <= this.maxRetries) {
+      try {
+        if (onCancel && onCancel()) {
+          throw new Error('Task cancelled');
+        }
+
+        // 确保本地父目录存在
+        const parentDir = path.dirname(localFilePath);
+        if (!fs.existsSync(parentDir)) {
+          fs.mkdirSync(parentDir, { recursive: true });
+        }
+
+        const normalizedPath = remotePath.replace(/^\//, '');
+        const response = await this.client.get(normalizedPath, {
+          responseType: 'stream',
+          onDownloadProgress: (progressEvent) => {
+            if (onCancel && onCancel()) {
+              throw new Error('Task cancelled');
+            }
+            if (onProgress && progressEvent.total) {
+              const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+              onProgress(percent, progressEvent.loaded, progressEvent.total);
+            }
+          }
+        });
+
+        await new Promise((resolve, reject) => {
+          const writer = fs.createWriteStream(localFilePath);
+          response.data.pipe(writer);
+          writer.on('finish', resolve);
+          writer.on('error', reject);
+          response.data.on('error', reject);
+        });
+
+        return { success: true, message: '下载成功' };
+      } catch (error) {
+        retries++;
+        if (error.message === 'Task cancelled') {
+          if (fs.existsSync(localFilePath)) {
+            try { fs.unlinkSync(localFilePath); } catch (e) { /* ignore */ }
+          }
+          return { success: false, message: '任务已取消' };
+        }
+        if (retries > this.maxRetries) {
+          if (error.response) {
+            return { success: false, message: `下载失败: ${error.response.status} ${error.response.statusText}` };
+          }
+          return { success: false, message: `下载失败: ${error.message}` };
+        }
+        await new Promise(resolve => setTimeout(resolve, this.retryDelay));
+      }
+    }
+  }
+
+  // 从远程拉取到本地（反向同步）
+  async pullDirectory(remoteDir, localDir, options = {}) {
+    const {
+      deleteFiles = false,
+      exclude = [],
+      onProgress = null,
+      onFileComplete = null,
+      onCancel = null,
+      incremental = true
+    } = options;
+
+    try {
+      // 确保本地目录存在
+      if (!fs.existsSync(localDir)) {
+        fs.mkdirSync(localDir, { recursive: true });
+      }
+
+      // 获取远程文件列表
+      const remoteListResult = await this.listRemoteDirectory(remoteDir);
+      if (!remoteListResult.success) {
+        return { success: false, message: `无法列出远程目录: ${remoteListResult.message}` };
+      }
+
+      // 规范化远程相对路径
+      const remoteFiles = [];
+      remoteListResult.files.forEach(file => {
+        const relativePath = this.getRemoteRelativePath(file.path, remoteDir);
+
+        if (!relativePath) return;
+
+        // 排除规则
+        const shouldExclude = exclude.some(pattern => {
+          if (pattern.endsWith('/')) {
+            return relativePath.startsWith(pattern.slice(0, -1));
+          }
+          const ext = path.extname(relativePath);
+          return pattern === path.basename(relativePath) || pattern === `*${ext}`;
+        });
+        if (shouldExclude) return;
+
+        remoteFiles.push({
+          relativePath,
+          fullRemotePath: `${remoteDir.replace(/\/$/, '')}/${relativePath}`.replace(/\/+/g, '/'),
+          size: file.size,
+          lastModified: file.lastModified
+        });
+      });
+
+      const totalFiles = remoteFiles.length;
+      let downloadedFiles = 0;
+      let skippedFiles = 0;
+      let failedFiles = 0;
+
+      // 列出本地文件（用于增量比对和删除检查）
+      const localFiles = this.listFiles(localDir, exclude);
+      const localFilesMap = new Map();
+      localFiles.forEach(f => localFilesMap.set(f.relativePath.replace(/\\/g, '/'), f));
+
+      // 删除本地存在但远程不存在的文件
+      if (deleteFiles && incremental) {
+        const remoteRelativeSet = new Set(remoteFiles.map(f => f.relativePath));
+        for (const localFile of localFiles) {
+          if (onCancel && onCancel()) {
+            throw new Error('Task cancelled');
+          }
+          if (!remoteRelativeSet.has(localFile.relativePath)) {
+            console.log(`[WebDAV] Deleting local file: ${localFile.relativePath}`);
+            try {
+              fs.unlinkSync(localFile.fullPath);
+              if (onFileComplete) {
+                onFileComplete(localFile.relativePath, 'deleted');
+              }
+            } catch (error) {
+              console.error(`[WebDAV] Failed to delete local file ${localFile.relativePath}: ${error.message}`);
+            }
+          }
+        }
+      }
+
+      for (const remoteFile of remoteFiles) {
+        if (onCancel && onCancel()) {
+          throw new Error('Task cancelled');
+        }
+
+        if (onProgress) {
+          const percent = totalFiles === 0 ? 100 : Math.round(((downloadedFiles + skippedFiles) / totalFiles) * 100);
+          onProgress(percent, downloadedFiles + skippedFiles, totalFiles, remoteFile.relativePath);
+        }
+
+        // 增量比对：本地已存在且大小相同则跳过
+        const localFile = localFilesMap.get(remoteFile.relativePath);
+        if (incremental && localFile && localFile.size === remoteFile.size) {
+          skippedFiles++;
+          if (onFileComplete) {
+            onFileComplete(remoteFile.relativePath, 'skipped');
+          }
+          continue;
+        }
+
+        const localFullPath = path.join(localDir, remoteFile.relativePath);
+        const result = await this.downloadFile(remoteFile.fullRemotePath, localFullPath, null, onCancel);
+
+        if (result.success) {
+          downloadedFiles++;
+          if (onFileComplete) {
+            onFileComplete(remoteFile.relativePath, true);
+          }
+        } else {
+          failedFiles++;
+          if (onFileComplete) {
+            onFileComplete(remoteFile.relativePath, false, result.message);
+          }
+        }
+      }
+
+      if (onProgress) {
+        onProgress(100, downloadedFiles + skippedFiles, totalFiles, '完成');
+      }
+
+      return {
+        success: true,
+        message: `拉取完成: ${downloadedFiles} 个文件下载, ${skippedFiles} 个文件跳过${failedFiles > 0 ? `, ${failedFiles} 个失败` : ''}`,
+        uploadedFiles: downloadedFiles,
+        skippedFiles,
+        totalFiles,
+        failedFiles
+      };
+    } catch (error) {
+      if (error.message === 'Task cancelled') {
+        return { success: false, message: '任务已取消' };
+      }
+      return { success: false, message: `拉取失败: ${error.message}` };
+    }
   }
 
   // 增量同步目录
@@ -332,25 +581,10 @@ class WebDAVSync {
         const remoteListResult = await this.listRemoteDirectory(remoteDir);
         if (remoteListResult.success) {
           remoteListResult.files.forEach(file => {
-            // 提取相对路径
-            let relativePath = file.path;
-            relativePath = decodeURIComponent(relativePath).replace(/^\//, '');
-            
-            // 移除 WebDAV 根路径前缀（如 /dav/）
-            const davPrefix = relativePath.split('/')[0];
-            if (davPrefix && relativePath.startsWith(davPrefix + '/')) {
-              relativePath = relativePath.substring(davPrefix.length + 1);
-            }
-            
-            // 移除 remoteDir 前缀
-            const normalizedRemoteDir = remoteDir.replace(/^\//, '');
-            if (relativePath.startsWith(normalizedRemoteDir)) {
-              relativePath = relativePath.substring(normalizedRemoteDir.length).replace(/^\//, '');
-            }
-            
-            // 统一使用正斜杠，确保与本地路径匹配
-            relativePath = relativePath.replace(/\\/g, '/');
-            
+            // 提取相对路径（兼容 WebDAV 地址带多段路径）
+            const relativePath = this.getRemoteRelativePath(file.path, remoteDir);
+            if (!relativePath) return;
+
             remoteFilesMap.set(relativePath, { ...file, exists: true });
           });
         }
@@ -400,7 +634,7 @@ class WebDAVSync {
         const remoteFile = remoteFilesMap.get(normalizedLocalPath);
 
         if (onProgress) {
-          const percent = Math.round(((uploadedFiles + skippedFiles) / totalFiles) * 100);
+          const percent = totalFiles === 0 ? 100 : Math.round(((uploadedFiles + skippedFiles) / totalFiles) * 100);
           onProgress(percent, uploadedFiles + skippedFiles, totalFiles, localFile.relativePath);
         }
 

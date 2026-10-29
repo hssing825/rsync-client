@@ -14,6 +14,20 @@ const scheduledTasks = {};
 // 项目根目录
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 
+// 将路径转换为 rsync 兼容格式（Windows 下转为 Cygwin 路径）
+function toRsyncPath(p) {
+  if (process.platform === 'win32') {
+    const winPathMatch = p.match(/^([A-Za-z]):[\/\\]/);
+    if (winPathMatch) {
+      const drive = winPathMatch[1].toLowerCase();
+      const restPath = p.substring(2).replace(/\\/g, '/');
+      return `/cygdrive/${drive}${restPath}`;
+    }
+    return p.replace(/\\/g, '/');
+  }
+  return p;
+}
+
 function loadScheduledTasks() {
   const tasks = db.getTasks().filter(t => t.enabled && t.cron_expression);
   
@@ -36,61 +50,56 @@ function scheduleTask(task) {
   scheduledTasks[task.id] = cronTask;
 }
 
-async function executeTask(taskId) {
+async function executeTask(taskId, direction = 'push') {
   const task = db.getTask(taskId);
   
   if (!task) return;
 
   const startTime = Date.now();
+  const isPull = direction === 'pull';
+  const directionText = isPull ? '拉取' : '推送';
 
   // 检查是否是 OpenList 同步任务
   if (task.sync_type === 'openlist') {
-    await executeOpenListTask(taskId, task, startTime);
+    await executeOpenListTask(taskId, task, startTime, direction);
     return;
   }
 
-  // 解析源路径：支持相对路径和绝对路径
-  let sourcePath = task.source_path;
-  if (!path.isAbsolute(sourcePath)) {
-    // 相对路径：相对于项目根目录
-    sourcePath = path.join(PROJECT_ROOT, sourcePath);
+  // 解析本地路径：支持相对路径和绝对路径，并转换为 rsync 兼容格式
+  let rawLocalPath = task.source_path;
+  if (!path.isAbsolute(rawLocalPath)) {
+    rawLocalPath = path.join(PROJECT_ROOT, rawLocalPath);
   }
-  
-  // Windows 路径转换为 rsync 兼容格式
-  // cwRsync 使用 Cygwin 路径格式：/cygdrive/c/... 或 /cygdrive/f/...
-  if (process.platform === 'win32') {
-    // 检测是否是 Windows 路径（如 F:/workspace 或 F:\workspace）
-    const winPathMatch = sourcePath.match(/^([A-Za-z]):[\/\\]/);
-    if (winPathMatch) {
-      const drive = winPathMatch[1].toLowerCase();
-      const restPath = sourcePath.substring(2).replace(/\\/g, '/');
-      sourcePath = `/cygdrive/${drive}${restPath}`;
-    } else {
-      // 已经是正斜杠的路径
-      sourcePath = sourcePath.replace(/\\/g, '/');
-    }
-  }
+  const localPath = toRsyncPath(rawLocalPath);
 
-  console.log(`\n[Task ${taskId}] Starting task: ${task.name}`);
-  console.log(`[Task ${taskId}] Source: ${sourcePath}`);
-  console.log(`[Task ${taskId}] Target: ${buildTargetPath(task)}`);
+  // 根据方向确定 rsync 的源和目标
+  // 推送：本地 -> 目标；拉取：目标 -> 本地
+  const remotePath = buildTargetPath(task);
+  const sourcePath = isPull ? remotePath : localPath;
+  const targetPath = isPull ? localPath : remotePath;
+
+  // 拉取时以远程目录内容为源，避免在本地生成同名的嵌套子目录
+  const rsyncSource = isPull ? `${sourcePath.replace(/\/+$/, '')}/` : sourcePath;
+
+  console.log(`\n[Task ${taskId}] Starting task (${directionText}): ${task.name}`);
+  console.log(`[Task ${taskId}] Source: ${rsyncSource}`);
+  console.log(`[Task ${taskId}] Target: ${targetPath}`);
 
   const logEntry = db.addLog({
     task_id: taskId,
     task_name: task.name,
     status: 'running',
-    message: 'Task started'
+    message: `任务开始（${directionText}）`
   });
 
   db.updateTask(taskId, { status: 'running', last_run_at: new Date().toISOString() });
 
   const rsyncOptions = JSON.parse(task.rsync_options || '{}');
   const rsyncArgs = buildRsyncArgs(task, rsyncOptions);
-  const targetPath = buildTargetPath(task);
 
-  console.log(`[Task ${taskId}] Rsync command: rsync ${rsyncArgs.join(' ')} ${sourcePath} ${targetPath}`);
+  console.log(`[Task ${taskId}] Rsync command: rsync ${rsyncArgs.join(' ')} ${rsyncSource} ${targetPath}`);
 
-  const child = spawn('rsync', [...rsyncArgs, sourcePath, targetPath]);
+  const child = spawn('rsync', [...rsyncArgs, rsyncSource, targetPath]);
   runningTasks[taskId] = child;
 
   let stdoutData = '';
@@ -100,14 +109,14 @@ async function executeTask(taskId) {
     const text = data.toString();
     stdoutData += text;
     console.log(`[Task ${taskId}] ${text.trim()}`);
-    updateLogProgress(logEntry.lastID, sourcePath, targetPath, rsyncArgs);
+    updateLogProgress(logEntry.lastID, rsyncSource, targetPath, rsyncArgs);
   });
 
   child.stderr.on('data', (data) => {
     const text = data.toString();
     stderrData += text;
     console.error(`[Task ${taskId}] ${text.trim()}`);
-    updateLogProgress(logEntry.lastID, sourcePath, targetPath, rsyncArgs);
+    updateLogProgress(logEntry.lastID, rsyncSource, targetPath, rsyncArgs);
   });
 
   function updateLogProgress(logId, src, tgt, args) {
@@ -136,13 +145,13 @@ async function executeTask(taskId) {
     
     const status = code === 0 ? 'success' : 'failed';
     const result = code === 0 ? '成功' : `失败 (退出码 ${code})`;
-    const summary = `任务${result} | 耗时: ${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+    const summary = `任务${result}（${directionText}）| 耗时: ${((Date.now() - startTime) / 1000).toFixed(1)}s`;
     
     const fullLog = [
       summary,
-      `源路径: ${sourcePath}`,
+      `源路径: ${rsyncSource}`,
       `目标: ${targetPath}`,
-      `命令: rsync ${rsyncArgs.join(' ')} ${sourcePath} ${targetPath}`,
+      `命令: rsync ${rsyncArgs.join(' ')} ${rsyncSource} ${targetPath}`,
       ``,
       `输出:`,
       stdoutData || '(无输出)',
@@ -161,8 +170,8 @@ async function executeTask(taskId) {
 
     db.updateTask(taskId, { status: status === 'success' ? 'idle' : 'error' });
 
-    if (code === 0 && task.sync_type === 'local' && task.auto_snapshot !== 0) {
-      createSnapshotAfterBackup(taskId, task, sourcePath);
+    if (code === 0 && !isPull && task.sync_type === 'local' && task.auto_snapshot !== 0) {
+      createSnapshotAfterBackup(taskId, task, localPath);
     }
   });
 
@@ -192,14 +201,16 @@ async function executeTask(taskId) {
   });
 }
 
-async function executeOpenListTask(taskId, task, startTime) {
-  console.log(`\n[Task ${taskId}] Starting OpenList sync: ${task.name}`);
+async function executeOpenListTask(taskId, task, startTime, direction = 'push') {
+  const isPull = direction === 'pull';
+  const directionText = isPull ? '拉取' : '推送';
+  console.log(`\n[Task ${taskId}] Starting OpenList sync (${directionText}): ${task.name}`);
 
   const logEntry = db.addLog({
     task_id: taskId,
     task_name: task.name,
     status: 'running',
-    message: 'OpenList 同步开始'
+    message: `OpenList 同步开始（${directionText}）`
   });
 
   db.updateTask(taskId, { status: 'running', last_run_at: new Date().toISOString() });
@@ -229,6 +240,7 @@ async function executeOpenListTask(taskId, task, startTime) {
 
     // 执行同步
     const result = await openlistSync.sync(task, {
+      direction,
       onCancel: () => isCancelled,
       onProgress: (percent, completed, total, currentFile) => {
         if (isCancelled) return;
@@ -274,16 +286,16 @@ async function executeOpenListTask(taskId, task, startTime) {
     const statusText = result.success ? '成功' : '失败';
     
     const fullLog = [
-      `=== OpenList 同步${statusText} ===`,
+      `=== OpenList 同步${statusText}（${directionText}） ===`,
       `任务: ${task.name}`,
-      `源路径: ${task.source_path}`,
-      `目标: ${server.webdav_url}${task.target_path}`,
+      `本地路径: ${task.source_path}`,
+      `远程路径: ${server.webdav_url}${task.target_path}`,
       ``,
       `进度记录:`,
       ...progressMessages,
       ``,
       `统计:`,
-      `- 上传文件: ${result.uploadedFiles || 0}`,
+      `- ${isPull ? '下载' : '上传'}文件: ${result.uploadedFiles || 0}`,
       `- 跳过文件: ${result.skippedFiles || 0}`,
       `- 失败文件: ${result.failedFiles || 0}`,
       `- 总文件数: ${result.totalFiles || 0}`,
@@ -301,6 +313,7 @@ async function executeOpenListTask(taskId, task, startTime) {
     });
 
     db.updateTask(taskId, { status: status === 'success' ? 'idle' : 'error' });
+    delete runningTasks[taskId];
 
   } catch (error) {
     if (isCancelled) {
@@ -339,6 +352,7 @@ async function executeOpenListTask(taskId, task, startTime) {
     });
 
     db.updateTask(taskId, { status: 'error' });
+    delete runningTasks[taskId];
   }
 }
 
@@ -650,7 +664,16 @@ router.delete('/:id', (req, res) => {
     }
 
     if (runningTasks[req.params.id]) {
-      runningTasks[req.params.id].kill();
+      const proc = runningTasks[req.params.id];
+      try {
+        if (typeof proc.cancel === 'function') {
+          proc.cancel();
+        } else if (!proc.killed) {
+          proc.kill('SIGKILL');
+        }
+      } catch (e) {
+        // 进程可能已经退出
+      }
       delete runningTasks[req.params.id];
     }
 
@@ -667,6 +690,14 @@ router.delete('/:id', (req, res) => {
 });
 
 router.post('/:id/run', async (req, res) => {
+  await runTaskHandler(req, res, 'push');
+});
+
+router.post('/:id/pull', async (req, res) => {
+  await runTaskHandler(req, res, 'pull');
+});
+
+async function runTaskHandler(req, res, direction) {
   try {
     const task = db.getTask(req.params.id);
     if (!task) {
@@ -677,7 +708,9 @@ router.post('/:id/run', async (req, res) => {
     if (runningTasks[req.params.id]) {
       const proc = runningTasks[req.params.id];
       try {
-        if (!proc.killed) {
+        if (typeof proc.cancel === 'function') {
+          proc.cancel();
+        } else if (!proc.killed) {
           proc.kill('SIGKILL');
         }
       } catch (e) {
@@ -687,7 +720,7 @@ router.post('/:id/run', async (req, res) => {
     }
 
     // 同步执行 executeTask，确保状态正确更新后再返回响应
-    await executeTask(req.params.id);
+    await executeTask(req.params.id, direction);
     
     res.json({ success: true, message: 'Task started' });
   } catch (err) {
@@ -695,7 +728,7 @@ router.post('/:id/run', async (req, res) => {
     db.updateTask(req.params.id, { status: 'error' });
     res.status(500).json({ success: false, message: err.message });
   }
-});
+}
 
 router.post('/:id/stop', (req, res) => {
   try {
