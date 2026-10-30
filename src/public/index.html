@@ -77,42 +77,22 @@
             <div class="table-responsive">
               <el-table :data="tasks" stripe>
                 <el-table-column prop="id" label="ID" width="60"></el-table-column>
-                <el-table-column prop="name" label="任务名称" min-width="120" show-overflow-tooltip></el-table-column>
-                <el-table-column label="类型" width="100">
+                <el-table-column prop="name" label="任务名称" min-width="160" show-overflow-tooltip></el-table-column>
+                <el-table-column label="类型" width="110">
                   <template #default="scope">
                     <el-tag v-if="scope.row.sync_type === 'openlist'" type="success" size="small">OpenList</el-tag>
                     <el-tag v-else-if="scope.row.sync_type === 'local'" type="info" size="small">本地</el-tag>
                     <el-tag v-else type="primary" size="small">远程</el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="同步模式" width="100" v-if="tasks.some(t => t.sync_type === 'openlist')">
-                  <template #default="scope">
-                    <span v-if="scope.row.sync_type === 'openlist'">{{ scope.row.sync_mode === 'full' ? '全量' : '增量' }}</span>
-                    <span v-else>-</span>
-                  </template>
-                </el-table-column>
-                <el-table-column label="加密" width="70" v-if="tasks.some(t => t.encryption_enabled === 1)">
-                  <template #default="scope">
-                    <el-tag v-if="scope.row.encryption_enabled === 1" type="warning" size="small">加密</el-tag>
-                    <span v-else>-</span>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="server_name" label="服务器" min-width="100" show-overflow-tooltip></el-table-column>
-                <el-table-column label="模块" width="90" v-if="tasks.some(t => t.sync_type === 'remote')">
-                  <template #default="scope">
-                    <span v-if="scope.row.sync_type === 'remote'">{{ scope.row.module || '(SSH)' }}</span>
-                    <span v-else>-</span>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="source_path" label="源路径" min-width="120" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="target_path" label="目标路径" min-width="120" show-overflow-tooltip></el-table-column>
-                <el-table-column prop="cron_expression" label="定时" width="100"></el-table-column>
+                <el-table-column prop="server_name" label="服务器" min-width="130" show-overflow-tooltip></el-table-column>
+                <el-table-column prop="cron_expression" label="定时" width="110"></el-table-column>
                 <el-table-column label="状态" width="100">
                   <template #default="scope">
                     <span :class="['status-badge', 'status-' + scope.row.status]" style="white-space: nowrap;">{{ scope.row.status }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="进度" width="180">
+                <el-table-column label="进度" width="200">
                   <template #default="scope">
                     <div v-if="scope.row.status === 'running'">
                       <div style="font-size: 12px; color: #606266; margin-bottom: 4px;">{{ taskProgressText[scope.row.id] || '准备中...' }}</div>
@@ -121,7 +101,7 @@
                     <span v-else style="color: #909399;">-</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="启用" width="70">
+                <el-table-column label="启用" width="80">
                   <template #default="scope">
                     <el-switch v-model="scope.row.enabled" :active-value="1" :inactive-value="0" @change="toggleTask(scope.row)"></el-switch>
                   </template>
